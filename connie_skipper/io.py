@@ -17,13 +17,17 @@ def hdu_to_DataArray( hdu, new_dim = None ):
     """
     dims = ( [new_dim] if new_dim else [] ) + ["row", "col"]
     coords = { new_dim: (new_dim, [hdu.header[new_dim]]) } if new_dim else None
-    print( dims, coords )
-    return xr.DataArray(
-        data = [hdu.data] if new_dim else hdu.data,
+#     print( dims, coords )
+    data = hdu.data.astype(float)
+    da = xr.DataArray(
+        data = [data] if new_dim else data,
         dims = dims,
         coords = coords,
         attrs = { key: (hdu.header[key], hdu.header.comments[key]) for key in hdu.header.keys() if key != new_dim }
     )
+    da["row"] = range(da["row"].size)
+    da["col"] = range(da["col"].size)
+    return da
 
 def fits_to_DataArray( fpath ):
     """generates a DataArray from a FITS file
@@ -44,5 +48,7 @@ def fits_to_DataArray( fpath ):
         for hdu in f:
             if hdu.data is not None:
                 data.append( hdu_to_DataArray( hdu, new_dim = "chid" ) )
+#             else:
+#                 print( hdu.header )
     data = xr.concat( data, dim="chid" )
     return data
