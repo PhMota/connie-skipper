@@ -2,6 +2,7 @@ from xarray import register_dataarray_accessor, register_dataset_accessor
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
+from matplotlib.axes._axes import Axes
 
 @register_dataarray_accessor("skipper")
 class SkipperDataArrayAccessor:
@@ -172,7 +173,6 @@ class SkipperDataArrayAccessor:
             .1, 
             pad = 0.6, 
         )
-        
         extend = im.colorbar.extend
         boundaries = im.colorbar._boundaries
         im.colorbar.remove()
@@ -190,7 +190,7 @@ class SkipperDataArrayAccessor:
             "top", 
             1.5, 
             pad = 0.1, 
-            sharex = axImg
+            sharex = axImg,
         )
         axProj_top.xaxis.set_label_position('top')
         axProj_top.xaxis.tick_top()
@@ -201,6 +201,7 @@ class SkipperDataArrayAccessor:
         )
         axProj_top.grid(True)
         axProj_top.set_ylabel(f"{mode}(col)")        
+        print(type(axProj_top))
 
         ### right panel
         axProj_right = divider.append_axes(
@@ -208,7 +209,6 @@ class SkipperDataArrayAccessor:
             1.5, 
             pad = 0.1, 
             sharey = axImg,
-#             sharex = axProj_top.yaxis
         )
         axProj_right.yaxis.set_label_position('right')
         axProj_right.yaxis.tick_right()
@@ -222,8 +222,73 @@ class SkipperDataArrayAccessor:
         axProj_right.set_title("")
         axProj_right.set_xlabel(f"{mode}(row)")
         
+#         ### aux panel for resizing
+#         axAux = divider.append_axes(
+#             "right",
+#             1.5,
+#             pad = 0.1,
+#             sharey = axProj_top,
+#             sharex = axProj_right,
+# #             add_to_figure = False
+#         )
+#         axAux.plot( [0], [0] )
+#         axAux.set_aspect(1)
+        
         ### finalize
         plt.tight_layout()
         plt.draw()
         fig.canvas.layout.width = '100%'
         return fig
+
+# attempting to mimmick plt.Axes with all the direction information swapped
+# works for the first draw, but does not refresh
+class SwapedAxes(Axes):
+    def __init__(self, ax):
+        self._axis_names = ("y", "x")
+        self._ax = ax
+        self.xaxis, self.yaxis = ax.yaxis, ax.xaxis
+        self._autoscaleXon = self._autoscaleYon = True
+        self._animated = ax._animated
+        self.dataLim = type(ax.dataLim)( np.array(ax.dataLim.get_points())[:, ::-1].tolist() )
+        print(ax.dataLim, "->", self.dataLim)
+        self._viewLim = type(ax._viewLim)( np.array(ax._viewLim.get_points())[:, ::-1].tolist() )
+        print(ax._viewLim, "->", self._viewLim)
+        
+        self.spines = type(ax.spines)([ ("left", ax.spines["top"]), ("right", ax.spines["bottom"]), ("top", ax.spines["left"]), ("bottom", ax.spines["bottom"]) ])
+        print( ax.spines, "->", self.spines )
+        
+        print( ax._axes._position, "->", type(ax._axes._position)( np.array(ax._axes._position.get_points())[:, ::-1].tolist() ) )
+#         self._axes = type(ax._axes)( 
+#             type(ax._axes._position)(
+#                 ax.fig,
+#                 ax._axes._position.get_points()[:, ::-1].tolist()
+#             ) 
+#         )
+        self._axes = type(
+            "_axes",
+            (),
+            dict( 
+                _position = type(ax._axes._position)( np.array(ax._axes._position.get_points())[:, ::-1].tolist() ),
+                xaxis = ax._axes.yaxis,
+                yaxis = ax._axes.xaxis,
+                __repr__ = ax._axes.__repr__,
+                __str__ = ax._axes.__str__
+            )
+        )
+        print( ax._axes._position, "->", self._axes._position )
+        
+        print( ax._axes, "->", self._axes )
+        
+    
+    def get_xlim(self):
+        return self._ax.get_ylim()
+    
+    def get_ylim(self):
+        return self._ax.get_xlim()
+            
+    def __getattr__(self, attr):
+        print()
+        print( attr, ":" )
+        print( getattr(self._ax, attr) )
+        return getattr(self._ax, attr)
+    
