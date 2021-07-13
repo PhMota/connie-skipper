@@ -1,3 +1,4 @@
+import numpy as np
 import astropy.io.fits as fits
 import xarray as xr
 
@@ -15,10 +16,12 @@ def hdu_to_DataArray( hdu, new_dim = None ):
     -------
     data : DataArray
     """
-    dims = ( [new_dim] if new_dim else [] ) + ["row", "col"]
+    dims = ( [new_dim] if new_dim else [] ) + ["row", "col", "samp"]
     coords = { new_dim: (new_dim, [hdu.header[new_dim]]) } if new_dim else None
 #     print( dims, coords )
     data = hdu.data.astype(float)
+    data = data.reshape( (data.shape[0], -1, int(hdu.header["nsamp"])) )
+#     print( data.shape, int(hdu.header["nsamp"]) )
     da = xr.DataArray(
         data = [data] if new_dim else data,
         dims = dims,
@@ -44,7 +47,7 @@ def fits_to_DataArray( fpath ):
 
     """
     data = []
-    with fits.open( fpath ) as f:
+    with fits.open( fpath, mode='readonly' ) as f:
         for hdu in f:
             if hdu.data is not None:
                 data.append( hdu_to_DataArray( hdu, new_dim = "chid" ) )

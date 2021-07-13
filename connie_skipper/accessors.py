@@ -1,8 +1,15 @@
-from xarray import register_dataarray_accessor, register_dataset_accessor
+from xarray import (
+    register_dataarray_accessor, 
+    register_dataset_accessor
+)
+from xarray.core.extensions import AccessorRegistrationWarning
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 from matplotlib.axes._axes import Axes
+
+import warnings
+warnings.simplefilter("ignore", category=AccessorRegistrationWarning)
 
 @register_dataarray_accessor("skipper")
 class SkipperDataArrayAccessor:
@@ -137,31 +144,50 @@ class SkipperDataArrayAccessor:
         mode = "median",
         **kwargs
     ):
-        return self.da.skipper.stats( dim, axis, skipna, mode ).plot( hue = hue, **kwargs )
-    
-    def plot_imshow( self, aspect = 1, **kwargs ):
-        x = kwargs.pop("x", "row")
-        y = kwargs.pop("y", "col")
-        obj = self.da.plot.imshow(x=x, y=y, **kwargs )
-        if isinstance(obj, xr.plot.FacetGrid ):
-            for ax in obj.axes:
-                plt.sca(ax).set_aspect( aspect )
-        else:
-            obj.axes.set_aspect( aspect )
+        obj = self.da.skipper.stats( dim, axis, skipna, mode ).plot( hue = hue, **kwargs )
+        plt.draw()
         return obj
     
-    def plot_full( self, mode="median", fig = None, **kwargs ):
+    def plot_imshow( self, aspect = 1, ax=None, **kwargs ):
+        x = kwargs.pop("x", "row")
+        y = kwargs.pop("y", "col")
+        if ax is None:
+            fig, ax = plt.subplots(
+                figsize = kwargs.pop("figsize", (8,6))
+            )
+        obj = self.da.plot.imshow(x=x, y=y, ax=ax, **kwargs )
+        obj.axes.set_aspect( aspect )
+        plt.draw()
+        return obj
+    
+    def plot_full( 
+        self, 
+        x="col", 
+        y="row", 
+        mode="median", 
+        fig = None,
+        xproj = True,
+        yproj = True,
+        **kwargs 
+    ):
         from mpl_toolkits.axes_grid1 import make_axes_locatable
-        fig, axImg = plt.subplots(
-            figsize = kwargs.pop("figsize", (10,5))
-        )
+        if fig is None:
+            fig, axImg = plt.subplots(
+                figsize = kwargs.pop("figsize", (8,6))
+            )
+        else:
+            fig.clf()
+            axImg = fig.add_subplot(111)
+        fig.canvas.toolbar_position = 'bottom'
+        if "suptitle" in kwargs:
+            fig.suptitle(kwargs["suptitle"])
         ### panels
         divider = make_axes_locatable(axImg)
         
         ### image panel
         im = self.plot_imshow( 
-            x = "row", 
-            y = "col", 
+            x = x, 
+            y = y, 
             ax = axImg, 
             robust = kwargs.pop("robust", False),
         )
@@ -186,41 +212,42 @@ class SkipperDataArrayAccessor:
         axColor_left.yaxis.tick_left()
 
         ### top panel
-        axProj_top = divider.append_axes(
-            "top", 
-            1.5, 
-            pad = 0.1, 
-            sharex = axImg,
-        )
-        axProj_top.xaxis.set_label_position('top')
-        axProj_top.xaxis.tick_top()
-        self.plot_projection( 
-            ax = axProj_top,
-            x = "row", 
-            dim = "col",
-        )
-        axProj_top.grid(True)
-        axProj_top.set_ylabel(f"{mode}(col)")        
-        print(type(axProj_top))
+        if yproj:
+            axProj_top = divider.append_axes(
+                "top", 
+                1.5, 
+                pad = 0.1, 
+                sharex = axImg,
+            )
+            axProj_top.xaxis.set_label_position('top')
+            axProj_top.xaxis.tick_top()
+            self.plot_projection( 
+                ax = axProj_top,
+                x = x, 
+                dim = y,
+            )
+            axProj_top.grid(True)
+            axProj_top.set_ylabel(f"{mode}(col)")        
 
         ### right panel
-        axProj_right = divider.append_axes(
-            "right", 
-            1.5, 
-            pad = 0.1, 
-            sharey = axImg,
-        )
-        axProj_right.yaxis.set_label_position('right')
-        axProj_right.yaxis.tick_right()
-        self.plot_projection( 
-            ax = axProj_right,
-            y = "col", 
-            dim = "row",
-            mode = mode,
-        )
-        axProj_right.grid(True)
-        axProj_right.set_title("")
-        axProj_right.set_xlabel(f"{mode}(row)")
+        if xproj:
+            axProj_right = divider.append_axes(
+                "right", 
+                1.5, 
+                pad = 0.1, 
+                sharey = axImg,
+            )
+            axProj_right.yaxis.set_label_position('right')
+            axProj_right.yaxis.tick_right()
+            self.plot_projection( 
+                ax = axProj_right,
+                y = y, 
+                dim = x,
+                mode = mode,
+            )
+            axProj_right.grid(True)
+            axProj_right.set_title("")
+            axProj_right.set_xlabel(f"{mode}(row)")
         
 #         ### aux panel for resizing
 #         axAux = divider.append_axes(
@@ -235,9 +262,9 @@ class SkipperDataArrayAccessor:
 #         axAux.set_aspect(1)
         
         ### finalize
+        fig.canvas.layout.width = '100%'
         plt.tight_layout()
         plt.draw()
-        fig.canvas.layout.width = '100%'
         return fig
 
 # attempting to mimmick plt.Axes with all the direction information swapped
