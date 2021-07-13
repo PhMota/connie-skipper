@@ -8,6 +8,8 @@ echo 'screen started.'
 if [ ! -d '~/connie-skipper' ] 
 then
     git clone https://github.com/PhMota/connie-skipper.git
+else
+    git pull
 fi
 bash ~/connie-skipper/run.sh
 "
