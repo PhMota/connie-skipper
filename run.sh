@@ -1,15 +1,14 @@
 screen -dRRS connie-skipper bash -c "
 echo 'screen started.'
-python --version
 cd ~/connie-skipper
 module unload softwares/python/2.7-gnu-5.3
 module load py-notebook/6.1.5-gcc-8.3.0-lim66g5 softwares/texlive/2017 python/3.6.3-gcc-5.3.0
-python --version
+python3 --version
 python3 -m pip --version
 if [ ! -x ~/.local/bin/pip3 ]
 then 
     curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
-    python get-pip.py --user
+    python3 get-pip.py --user
 fi
 pip3 --version
 pwd
