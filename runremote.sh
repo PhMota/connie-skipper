@@ -10,7 +10,7 @@ else
     git pull
 fi
 bash ~/connie-skipper/run.sh
-" | tee runremote.log &
+" > tee runremote.log &
 PORT = $(tail runremote.log | grep http://localhost: | grep -o "[0-9]*")
 ssh -N -f -L localhost:$PORT:localhost:$PORT che.cbpf.br -p 13900
 echo "app running at (open link in browser)"
