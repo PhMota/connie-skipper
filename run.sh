@@ -10,6 +10,7 @@ then
     curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py
     python3 get-pip.py --user
 fi
+PATH=~/.local/bin/pip3:\$PATH
 if ! python3 -c 'import xarray'
 then 
     echo -e '\e[33minstall requirements:\e[0m'
