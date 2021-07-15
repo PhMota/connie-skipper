@@ -11,8 +11,6 @@ echo -e \"\\r\\e[4mhttp://localhost:\$PORT/\\e[0m\"
 
 echo -e "\e[34mstarting server at che\e[0m"
 ssh -t che.cbpf.br -p 13900 "
-source ~/.bashrc
-source ~/.bash_profile
 echo -e '\e[33mscreen started.\e[0m'
 pwd
 if [ ! -d ~/connie-skipper/ ] 
