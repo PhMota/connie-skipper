@@ -3,6 +3,8 @@ echo 'screen started.'
 cd ~/connie-skipper
 echo -e '\e[33mupdate connie-skipper.git\e[0m'
 git pull
+PATH=\"\"
+module purge
 module load py-notebook softwares/texlive python/3.6.3-gcc-8.3.0
 if [ ! -x ~/.local/bin/pip3 ]
 then 
@@ -11,6 +13,7 @@ then
     python3 get-pip.py --user
 fi
 PATH=~/.local/bin:\$PATH
+echo \$PATH
 if ! python3 -c 'import xarray'
 then 
     echo -e '\e[33minstall requirements:\e[0m'

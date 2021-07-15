@@ -142,11 +142,16 @@ class SkipperDataArrayAccessor:
         skipna = None, 
         hue = None,
         mode = "median",
+        ax = None,
         **kwargs
     ):
-        obj = self.da.skipper.stats( dim, axis, skipna, mode ).plot( hue = hue, **kwargs )
+        self.overscan("col").skipper.stats( dim, axis, skipna, mode ).plot( hue = hue, ax=ax, zorder=2, label='os', **kwargs )
+        self.da.skipper.stats( dim, axis, skipna, mode ).plot( hue = hue, ax=ax, zorder=1, label='all', **kwargs )
+        if ax:
+            ax.grid(True)
+        plt.legend()
         plt.draw()
-        return obj
+        return ax
     
     def plot_imshow( self, aspect = 1, ax=None, **kwargs ):
         x = kwargs.pop("x", "row")
@@ -160,10 +165,24 @@ class SkipperDataArrayAccessor:
         plt.draw()
         return obj
     
+    def plot_spectrum(self, bins=None, ax=None, **kwargs):
+        if ax is None:
+            fig, ax = plt.subplots(
+                figsize = kwargs.pop("figsize", (8,6))
+            )
+        os = self.overscan("col")
+        bins = np.arange( np.min(os.data), np.max(os.data), 1 )
+        os.plot.hist( bins = bins, yscale="log", ax = ax, zorder=2, label="os", **kwargs )
+        self.da.plot.hist( bins = bins, yscale="log", ax = ax, zorder=1, label='all' **kwargs )
+        ax.grid(True)
+        ax.legend()
+#         ax.draw()
+        return ax
+    
     def plot_full( 
         self, 
         x="col", 
-        y="row", 
+        y="row",
         mode="median", 
         fig = None,
         **kwargs 
@@ -203,13 +222,13 @@ class SkipperDataArrayAccessor:
         cbar = fig.colorbar(
             im, 
             cax = axColor_left, 
-#             orientation = "horizontal", 
             extend = extend 
         )
         axColor_left.yaxis.set_label_position("left")
         axColor_left.yaxis.tick_left()
 
         ### top panel
+        axProj_top = None
         if kwargs.pop("yproj", False):
             axProj_top = divider.append_axes(
                 "top", 
@@ -228,6 +247,7 @@ class SkipperDataArrayAccessor:
             axProj_top.set_ylabel(f"{mode}(col)")        
 
         ### right panel
+        axProj_right = None
         if kwargs.pop("xproj", False):
             axProj_right = divider.append_axes(
                 "right", 
@@ -247,6 +267,19 @@ class SkipperDataArrayAccessor:
             axProj_right.set_title("")
             axProj_right.set_xlabel(f"{mode}(row)")
         
+        ### right panel
+        if kwargs.pop("spectrum", False) and axProj_top is None:
+            axSpectrum = divider.append_axes(
+                "top",
+                1.5,
+                pad = 0.1,
+            )
+            axSpectrum.yaxis.set_label_position('right')
+            axSpectrum.yaxis.tick_right()
+            axSpectrum.xaxis.set_label_position('top')
+            axSpectrum.xaxis.tick_top()
+            self.plot_spectrum( bins = kwargs.pop("bins", 10), ax = axSpectrum )
+
 #         ### aux panel for resizing
 #         axAux = divider.append_axes(
 #             "right",
