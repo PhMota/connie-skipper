@@ -1,4 +1,4 @@
-screen -dmRRS connie-skipper bash -c "
+screen -dRRS connie-skipper bash -c "
 echo 'screen started.'
 cd ~/connie-skipper
 echo -e '\e[33mupdate connie-skipper.git\e[0m'
