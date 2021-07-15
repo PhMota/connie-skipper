@@ -23,4 +23,4 @@ else
     git pull
 fi
 bash ~/connie-skipper/run.sh
-" | tee runremote.log
+" | tee runremote.log || killall tail
