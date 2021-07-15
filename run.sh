@@ -3,7 +3,7 @@ echo 'screen started.'
 cd ~/connie-skipper
 echo -e '\e[33mupdate connie-skipper.git\e[0m'
 git pull
-module load py-notebook softwares/texlive python/3.6.3
+module load py-notebook softwares/texlive python/3.6.3-gcc-8.3.0
 if [ ! -x ~/.local/bin/pip3 ]
 then 
     echo -e '\e[33install pip\e[0m'
