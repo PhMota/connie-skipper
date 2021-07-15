@@ -166,8 +166,6 @@ class SkipperDataArrayAccessor:
         y="row", 
         mode="median", 
         fig = None,
-        xproj = True,
-        yproj = True,
         **kwargs 
     ):
         from mpl_toolkits.axes_grid1 import make_axes_locatable
@@ -212,7 +210,7 @@ class SkipperDataArrayAccessor:
         axColor_left.yaxis.tick_left()
 
         ### top panel
-        if yproj:
+        if kwargs.pop("yproj", False):
             axProj_top = divider.append_axes(
                 "top", 
                 1.5, 
@@ -230,7 +228,7 @@ class SkipperDataArrayAccessor:
             axProj_top.set_ylabel(f"{mode}(col)")        
 
         ### right panel
-        if xproj:
+        if kwargs.pop("xproj", False):
             axProj_right = divider.append_axes(
                 "right", 
                 1.5, 

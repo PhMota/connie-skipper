@@ -12,4 +12,4 @@ else
     git pull
 fi
 bash ~/connie-skipper/run.sh
-"
+" | tee runremote.log
