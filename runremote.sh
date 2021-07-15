@@ -1,5 +1,3 @@
-echo "forward che port 8889 to local port 8889"
-ssh -N -f -L localhost:8889:localhost:8889 che.cbpf.br -p 13900
 echo "update remote app and start jupyter at che in port 8889"
 ssh -t che.cbpf.br -p 13900 "
 source ~/.bashrc
@@ -12,4 +10,8 @@ else
     git pull
 fi
 bash ~/connie-skipper/run.sh
-" | tee runremote.log
+" | tee runremote.log &
+PORT = $(tail runremote.log | grep http://localhost: | grep -o "[0-9]*")
+ssh -N -f -L localhost:$PORT:localhost:$PORT che.cbpf.br -p 13900
+echo "app running at (open link in browser)"
+echo "http://localhost:$PORT/"

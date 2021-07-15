@@ -18,7 +18,7 @@ python3 -m pip --version
 pip3 --version
 echo 'update requirements:'
 pip3 --version
-pip3 install --upgrade pip3 --user
+pip3 install --upgrade pip --user
 pip3 install matplotlib --user
 pip3 install astropy --user
 pip3 install ipympl --user
