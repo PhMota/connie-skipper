@@ -3,6 +3,7 @@ from xarray import (
     register_dataset_accessor
 )
 from xarray.core.extensions import AccessorRegistrationWarning
+import xarray.plot.utils
 import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
@@ -10,6 +11,8 @@ from matplotlib.axes._axes import Axes
 
 import warnings
 warnings.simplefilter("ignore", category=AccessorRegistrationWarning)
+
+ORIGINAL_ROBUST_PERCENTILE = xarray.plot.utils.ROBUST_PERCENTILE
 
 @register_dataarray_accessor("skipper")
 class SkipperDataArrayAccessor:
@@ -96,7 +99,7 @@ class SkipperDataArrayAccessor:
         if isinstance( dim, (list, tuple)):
             dim = {d: slice(self.overscan_coord(d), None) for d in dim}
 
-        print( dim )
+#         print( dim )
         terms = [ self.da.sel({dim:sel}).skipper.stats( dim, axis, skipna, mode, **kwargs ) for dim, sel in dim.items() ]
         ret = xr.zeros_like(self.da)
         for term in terms:
@@ -150,19 +153,21 @@ class SkipperDataArrayAccessor:
         if ax:
             ax.grid(True)
         plt.legend()
-        plt.draw()
         return ax
     
-    def plot_imshow( self, aspect = 1, ax=None, **kwargs ):
+    def plot_imshow( self, aspect = 1, ax=None, energy_percentile = None, **kwargs ):
         x = kwargs.pop("x", "row")
         y = kwargs.pop("y", "col")
         if ax is None:
             fig, ax = plt.subplots(
                 figsize = kwargs.pop("figsize", (8,6))
             )
-        obj = self.da.plot.imshow(x=x, y=y, ax=ax, **kwargs )
+#         if energy_percentile:
+#             xarray.plot.utils.ROBUST_PERCENTILE = energy_percentile
+#             print( xarray.plot.utils.ROBUST_PERCENTILE )
+        obj = self.da.plot.imshow(x=x, y=y, ax=ax, robust=True, **kwargs )
         obj.axes.set_aspect( aspect )
-        plt.draw()
+#         xarray.plot.utils.ROBUST_PERCENTILE = ORIGINAL_ROBUST_PERCENTILE
         return obj
     
     def plot_spectrum(self, bins=None, ax=None, **kwargs):
@@ -171,23 +176,39 @@ class SkipperDataArrayAccessor:
                 figsize = kwargs.pop("figsize", (8,6))
             )
         os = self.overscan("col")
-        bins = np.arange( np.min(os.data), np.max(os.data), 1 )
+        energy_percentile = kwargs.pop("energy_percentile", None)
+        
+        if energy_percentile:
+            med = os.skipper.stats(["col", "row"], mode="median").data
+            mad = os.skipper.stats(["col", "row"], mode="mad").data
+            emin = med - energy_percentile*mad
+            emax = med + energy_percentile*mad
+        else:
+            med = np.nanpercentile(os.data.flatten(), 50)
+            emin = np.nanpercentile(os.data.flatten(), ORIGINAL_ROBUST_PERCENTILE)
+            emax = np.nanpercentile(os.data.flatten(), 100 - ORIGINAL_ROBUST_PERCENTILE)
+#         print( emin, emax )
+        bins = np.arange( emin, emax, 1. if emax - emin < 1000 else (emax-emin)/1000 )
         os.plot.hist( bins = bins, yscale="log", ax = ax, zorder=2, label="os", **kwargs )
-        self.da.plot.hist( bins = bins, yscale="log", ax = ax, zorder=1, label='all' **kwargs )
+        self.da.plot.hist( bins = bins, yscale="log", ax = ax, zorder=1, label='all', **kwargs )
         ax.grid(True)
-        ax.legend()
-#         ax.draw()
+        ax.legend(loc="upper right")
         return ax
     
     def plot_full( 
         self, 
         x="col", 
         y="row",
-        mode="median", 
+        mode="mean", 
         fig = None,
         **kwargs 
     ):
         from mpl_toolkits.axes_grid1 import make_axes_locatable
+        progress = kwargs.pop("progress_bar", None)
+        if progress:
+            progress_bar, progress_min, progress_max = progress
+            progress_bar.value, progress_bar.description = progress_min, "creating fig"
+            factor = lambda n: progress_min + n*(progress_max - progress_min)
         if fig is None:
             fig, axImg = plt.subplots(
                 figsize = kwargs.pop("figsize", (8,6))
@@ -202,15 +223,29 @@ class SkipperDataArrayAccessor:
         divider = make_axes_locatable(axImg)
         
         ### image panel
+        if progress:
+            progress_bar.value, progress_bar.description = factor(.2), "imshow"
+        
+        energy_percentile = kwargs.pop("energy_percentile", None)
         im = self.plot_imshow( 
             x = x, 
             y = y, 
             ax = axImg, 
-            robust = kwargs.pop("robust", False),
+#             robust = kwargs.pop("robust", False),
+            energy_percentile = energy_percentile
         )
         axImg.set_title("")
+        os = self.overscan("col")
+        med = os.skipper.stats(["col","row"], mode="median").data
+        mad = os.skipper.stats(["col", "row"], mode="mad").data
+        emin = med - energy_percentile*mad
+        emax = med + energy_percentile*mad
+        im.set_clim((emin, emax))
         
         ### colorbar
+        if progress:
+            progress_bar.value, progress_bar.description = factor(.5), "colobar"
+        
         axColor_left = divider.append_axes(
             "left", 
             .1, 
@@ -226,10 +261,11 @@ class SkipperDataArrayAccessor:
         )
         axColor_left.yaxis.set_label_position("left")
         axColor_left.yaxis.tick_left()
-
         ### top panel
         axProj_top = None
         if kwargs.pop("yproj", False):
+            if progress:
+                progress_bar.value, progress_bar.description = factor(.7), "yproj"            
             axProj_top = divider.append_axes(
                 "top", 
                 1.5, 
@@ -244,11 +280,13 @@ class SkipperDataArrayAccessor:
                 dim = y,
             )
             axProj_top.grid(True)
-            axProj_top.set_ylabel(f"{mode}(col)")        
+            axProj_top.set_ylabel(f"{mode}(col)")
 
         ### right panel
         axProj_right = None
         if kwargs.pop("xproj", False):
+            if progress:
+                progress_bar.value, progress_bar.description = factor(.8), "xproj"
             axProj_right = divider.append_axes(
                 "right", 
                 1.5, 
@@ -269,6 +307,8 @@ class SkipperDataArrayAccessor:
         
         ### right panel
         if kwargs.pop("spectrum", False) and axProj_top is None:
+            if progress:
+                progress_bar.value, progress_bar.description = factor(.9), "spectrum"
             axSpectrum = divider.append_axes(
                 "top",
                 1.5,
@@ -278,8 +318,12 @@ class SkipperDataArrayAccessor:
             axSpectrum.yaxis.tick_right()
             axSpectrum.xaxis.set_label_position('top')
             axSpectrum.xaxis.tick_top()
-            self.plot_spectrum( bins = kwargs.pop("bins", 10), ax = axSpectrum )
-
+            self.plot_spectrum( 
+                bins = kwargs.pop("bins", 10), 
+                ax = axSpectrum, 
+                energy_percentile = energy_percentile 
+            )
+#         print( "histogram done img" )
 #         ### aux panel for resizing
 #         axAux = divider.append_axes(
 #             "right",
@@ -296,6 +340,8 @@ class SkipperDataArrayAccessor:
         fig.canvas.layout.width = '100%'
         plt.tight_layout()
         plt.draw()
+        if progress:
+            progress_bar.value, progress_bar.description = progress_max, "done plot"
         return fig
 
 # attempting to mimmick plt.Axes with all the direction information swapped
