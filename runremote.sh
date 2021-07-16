@@ -31,4 +31,4 @@ echo -e "\e[33mclosing log file\e[0m"
 killall tail
 PORT=$(cat runremote.log | grep http://localhost | grep -o '[0-9]*')
 echo -e "\e[33mclosing the port fowarding at $PORT\e[0m"
-ssh -O cancel -L localhost:$PORT:localhost:$PORT che.cbpf.br -p 13900
+pkill -f "ssh -N -f -L localhost:\$PORT:localhost:\$PORT che.cbpf.br -p 13900"
