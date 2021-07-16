@@ -227,24 +227,26 @@ class SkipperDataArrayAccessor:
             progress_bar.value, progress_bar.description = factor(.2), "imshow"
         
         energy_percentile = kwargs.pop("energy_percentile", None)
-        im = self.plot_imshow( 
-            x = x, 
-            y = y, 
-            ax = axImg, 
-#             robust = kwargs.pop("robust", False),
-            energy_percentile = energy_percentile
-        )
-        axImg.set_title("")
         os = self.overscan("col")
         med = os.skipper.stats(["col","row"], mode="median").data
         mad = os.skipper.stats(["col", "row"], mode="mad").data
         emin = med - energy_percentile*mad
         emax = med + energy_percentile*mad
-        im.set_clim((emin, emax))
+#         im.set_clim((emin, emax))
+        im = self.plot_imshow( 
+            x = x, 
+            y = y, 
+            ax = axImg, 
+            vmin = emin,
+            vmax = emax,
+#             robust = kwargs.pop("robust", False),
+            energy_percentile = energy_percentile
+        )
+        axImg.set_title("")
         
         ### colorbar
         if progress:
-            progress_bar.value, progress_bar.description = factor(.5), "colobar"
+            progress_bar.value, progress_bar.description = factor(.4), "colobar"
         
         axColor_left = divider.append_axes(
             "left", 
@@ -265,7 +267,7 @@ class SkipperDataArrayAccessor:
         axProj_top = None
         if kwargs.pop("yproj", False):
             if progress:
-                progress_bar.value, progress_bar.description = factor(.7), "yproj"            
+                progress_bar.value, progress_bar.description = factor(.5), "yproj"            
             axProj_top = divider.append_axes(
                 "top", 
                 1.5, 
@@ -286,7 +288,7 @@ class SkipperDataArrayAccessor:
         axProj_right = None
         if kwargs.pop("xproj", False):
             if progress:
-                progress_bar.value, progress_bar.description = factor(.8), "xproj"
+                progress_bar.value, progress_bar.description = factor(.6), "xproj"
             axProj_right = divider.append_axes(
                 "right", 
                 1.5, 
@@ -308,7 +310,7 @@ class SkipperDataArrayAccessor:
         ### right panel
         if kwargs.pop("spectrum", False) and axProj_top is None:
             if progress:
-                progress_bar.value, progress_bar.description = factor(.9), "spectrum"
+                progress_bar.value, progress_bar.description = factor(.7), "spectrum"
             axSpectrum = divider.append_axes(
                 "top",
                 1.5,
