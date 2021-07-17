@@ -8,7 +8,7 @@ import numpy as np
 import xarray as xr
 import matplotlib.pyplot as plt
 from matplotlib.axes._axes import Axes
-
+import traceback
 import warnings
 warnings.simplefilter("ignore", category=AccessorRegistrationWarning)
 
@@ -119,7 +119,7 @@ class SkipperDataArrayAccessor:
         da.attrs = self.da.attrs
         return da
     
-    def gaussianfit(self, energy, distribution, peaks):
+    def gaussianfit(self, energy, distribution, peaks, log = None):
         from scipy.stats import norm
         from scipy.optimize import curve_fit
         
@@ -132,28 +132,33 @@ class SkipperDataArrayAccessor:
             np.nanmean( energy[peaks[1:]] + energy[peaks[:-1]] )/2 if peaks.size > 1 else 100,
         ]
         p0 = np.concatenate( [p0, distribution[peaks]], axis=-1 )
+        if log: log.value += f"p0 = {p0}<br>"
+
         bounds = (
             [-np.inf, np.inf],
             [10, np.inf],
             [10, np.inf],
             *( [ [1, np.inf] ]*peaks.size )
         )
-#         print( p0 )
-#         print( tuple(zip(*bounds)) )
+        if log: log.value += f"bounds = {bounds}<br>"
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore')
-            popt, pcov = curve_fit( 
-                multinorm, 
-                energy, 
-                distribution,
-                p0 = p0,
-                bounds = tuple(zip(*bounds))
-            )
+            try:
+                popt, pcov = curve_fit( 
+                    multinorm, 
+                    energy, 
+                    distribution,
+                    p0 = p0,
+                    bounds = tuple(zip(*bounds))
+                )
+                
+            except ValueError as e:
+                if log: log.value += f"<b>{e}</b><br>"
+                raise e
+        if log: log.value += f"popt = {popt}<br>"
         ret = multinorm(energy, *popt)
-#         print( p0 )
-#         print( popt )
         assert ret.shape == energy.shape
-        return energy[ret>1], ret[ret>1]
+        return (energy[ret>1], ret[ret>1]), popt
         
     
     def stats( self, dim = None, axis = None, skipna = None, mode = "median", **kwargs  ):
@@ -200,7 +205,19 @@ class SkipperDataArrayAccessor:
         plt.legend()
         return ax
     
-    def plot_imshow( self, aspect = 1, ax=None, energy_percentile = None, **kwargs ):
+    def plot_imshow( self, aspect = 1, ax=None, energy_percentile = 0, **kwargs ):
+        """generates the heatmap of the data
+        
+        Parameters
+        ----------
+        x : string
+            the dimension to be used in the x-axis
+        y : string
+            the dimension to be used in the y-axis
+        log : object
+            an object with `value` porperty where the output and error will be redirected to
+        """
+        log = kwargs.pop("log", None)
         x = kwargs.pop("x", "row")
         y = kwargs.pop("y", "col")
         if ax is None:
@@ -210,12 +227,26 @@ class SkipperDataArrayAccessor:
 #         if energy_percentile:
 #             xarray.plot.utils.ROBUST_PERCENTILE = energy_percentile
 #             print( xarray.plot.utils.ROBUST_PERCENTILE )
-        obj = self.da.plot.imshow(x=x, y=y, ax=ax, robust=True, **kwargs )
+        emin = np.percentile( self.da.data.flatten(), energy_percentile )
+        emax = np.percentile( self.da.data.flatten(), 100 - energy_percentile )
+        if log: 
+            log.value += f"imgE = [{emin}, {emax}]<br>"
+        else:
+            print(f"imgE = [{emin}, {emax}]")
+        obj = self.da.plot.imshow(
+            x = x, 
+            y = y, 
+            ax = ax, 
+            robust = True, 
+            vmin = emin, 
+            vmax = emax, 
+            **kwargs 
+        )
         obj.axes.set_aspect( aspect )
-#         xarray.plot.utils.ROBUST_PERCENTILE = ORIGINAL_ROBUST_PERCENTILE
         return obj
     
     def plot_spectrum(self, bins=None, ax=None, **kwargs):
+        log = kwargs.pop("log", None)
         if ax is None:
             fig, ax = plt.subplots(
                 figsize = kwargs.pop("figsize", (8,6))
@@ -223,17 +254,18 @@ class SkipperDataArrayAccessor:
         os = self.overscan("col")
         energy_percentile = kwargs.pop("energy_percentile", None)
         
-        if energy_percentile:
+        if energy_percentile is None:
             med = os.skipper.stats(["col", "row"], mode="median").data
             mad = os.skipper.stats(["col", "row"], mode="mad").data
             emin = med - energy_percentile*mad
             emax = med + energy_percentile*mad
+            if log: log.value += f"E = [{emin},{emax}]<br>"
         else:
-            med = np.nanpercentile(os.data.flatten(), 50)
-            emin = np.nanpercentile(os.data.flatten(), ORIGINAL_ROBUST_PERCENTILE)
-            emax = np.nanpercentile(os.data.flatten(), 100 - ORIGINAL_ROBUST_PERCENTILE)
+            emin = np.nanpercentile(os.data.flatten(), energy_percentile)
+            emax = np.nanpercentile(os.data.flatten(), 100 - energy_percentile)
 
         bins = np.arange( emin, emax, 1. if emax - emin < 5000 else (emax-emin)/5000 )
+        if log: log.value += f"dbin = {dbins(bins)}<br>"
         hist, *_ = xr.where(os != 0, os, np.nan).plot.hist( bins = bins, yscale="log", ax = ax, zorder=2, label="os", **kwargs )
         xr.where( self.da != 0, self.da, np.nan).plot.hist( bins = bins, yscale="log", ax = ax, zorder=1, label='all', **kwargs )
         
@@ -243,8 +275,13 @@ class SkipperDataArrayAccessor:
             height = 10,
             distance = int(300/dbins(bins)),
         )
-        ax.plot( xbins(bins)[peaks], hist[peaks], "x", label="peaks" )
-        ax.plot( *self.gaussianfit( xbins(bins), hist, peaks ), label="fit" )
+        if log: log.value += f"peaks{(peaks.size)} = {peaks}<br>"
+        ax.plot( xbins(bins)[peaks], hist[peaks], "ro" )
+        try:
+            xy, popt = self.gaussianfit( xbins(bins), hist, peaks, log )
+            ax.plot( *xy, "r--", label = fr"$\mu={popt[0]:.1f}$"+"\n"+fr"$\sigma={popt[1]:.1f}$"+"\n"+fr"$g={popt[2]:.1f}$" )
+        except ValueError:
+            if log: log.value += traceback.format_exec()
         ax.grid(True)
         ax.legend(loc="upper right")
         return ax
@@ -258,6 +295,7 @@ class SkipperDataArrayAccessor:
         **kwargs 
     ):
         from mpl_toolkits.axes_grid1 import make_axes_locatable
+        log = kwargs.pop("log", None)
         progress = kwargs.pop("progress_bar", None)
         if progress:
             progress_bar, progress_min, progress_max = progress
@@ -281,20 +319,21 @@ class SkipperDataArrayAccessor:
             progress_bar.value, progress_bar.description = factor(.2), "imshow"
         
         energy_percentile = kwargs.pop("energy_percentile", None)
-        os = self.overscan("col")
-        med = os.skipper.stats(["col","row"], mode="median").data
-        mad = os.skipper.stats(["col", "row"], mode="mad").data
-        emin = med - energy_percentile*mad
-        emax = med + energy_percentile*mad
+#         os = self.overscan("col")
+#         med = os.skipper.stats(["col","row"], mode="median").data
+#         mad = os.skipper.stats(["col", "row"], mode="mad").data
+#         emin = med - energy_percentile*mad
+#         emax = med + energy_percentile*mad
 #         im.set_clim((emin, emax))
         im = self.plot_imshow( 
             x = x, 
             y = y, 
             ax = axImg, 
-            vmin = emin,
-            vmax = emax,
+#             vmin = emin,
+#             vmax = emax,
 #             robust = kwargs.pop("robust", False),
-            energy_percentile = energy_percentile
+            energy_percentile = energy_percentile,
+            log = log
         )
         axImg.set_title("")
         
@@ -377,7 +416,8 @@ class SkipperDataArrayAccessor:
             self.plot_spectrum( 
                 bins = kwargs.pop("bins", 10), 
                 ax = axSpectrum, 
-                energy_percentile = energy_percentile 
+                energy_percentile = energy_percentile,
+                log = log
             )
 #         print( "histogram done img" )
 #         ### aux panel for resizing
