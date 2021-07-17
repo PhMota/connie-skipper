@@ -14,6 +14,9 @@ warnings.simplefilter("ignore", category=AccessorRegistrationWarning)
 
 ORIGINAL_ROBUST_PERCENTILE = xarray.plot.utils.ROBUST_PERCENTILE
 
+xbins = lambda b: (b[1:] + b[:-1])/2
+dbins = lambda b: b[1]-b[0]
+
 @register_dataarray_accessor("skipper")
 class SkipperDataArrayAccessor:
     """
@@ -105,11 +108,53 @@ class SkipperDataArrayAccessor:
         for term in terms:
             ret += term
         return ret/len(terms)
-    
+
+    def centralize_os( self, dim = None, axis = None, skipna = True, mode = "median", **kwargs ):
+        da = self.da - self.overscan(dim).skipper.center( None, axis, skipna, mode, **kwargs )
+        da.attrs = self.da.attrs
+        return da
+
     def demodulate(self, dim = None, axis = None, skipna = None, mode = "median", **kwargs ):
         da = self.da - self.modulation( dim, axis, skipna, **kwargs )
         da.attrs = self.da.attrs
         return da
+    
+    def gaussianfit(self, energy, distribution, peaks):
+        from scipy.stats import norm
+        from scipy.optimize import curve_fit
+        
+        multinorm = lambda x, mu, sigma, gain, *A: (
+            np.sum( [ a*norm.pdf(x, mu + i*gain, sigma)/norm.pdf(0, 0, sigma) for i, a in enumerate(A)], axis=0 )
+        )
+        p0 = [
+            energy[peaks].min(), 
+            np.nanmean( energy[peaks[1:]] - energy[peaks[:-1]] )/2 if peaks.size > 1 else 100,
+            np.nanmean( energy[peaks[1:]] + energy[peaks[:-1]] )/2 if peaks.size > 1 else 100,
+        ]
+        p0 = np.concatenate( [p0, distribution[peaks]], axis=-1 )
+        bounds = (
+            [-np.inf, np.inf],
+            [10, np.inf],
+            [10, np.inf],
+            *( [ [1, np.inf] ]*peaks.size )
+        )
+#         print( p0 )
+#         print( tuple(zip(*bounds)) )
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore')
+            popt, pcov = curve_fit( 
+                multinorm, 
+                energy, 
+                distribution,
+                p0 = p0,
+                bounds = tuple(zip(*bounds))
+            )
+        ret = multinorm(energy, *popt)
+#         print( p0 )
+#         print( popt )
+        assert ret.shape == energy.shape
+        return energy[ret>1], ret[ret>1]
+        
     
     def stats( self, dim = None, axis = None, skipna = None, mode = "median", **kwargs  ):
         """dispatcher for different statistics functions
@@ -187,10 +232,19 @@ class SkipperDataArrayAccessor:
             med = np.nanpercentile(os.data.flatten(), 50)
             emin = np.nanpercentile(os.data.flatten(), ORIGINAL_ROBUST_PERCENTILE)
             emax = np.nanpercentile(os.data.flatten(), 100 - ORIGINAL_ROBUST_PERCENTILE)
-#         print( emin, emax )
-        bins = np.arange( emin, emax, 1. if emax - emin < 1000 else (emax-emin)/1000 )
-        os.plot.hist( bins = bins, yscale="log", ax = ax, zorder=2, label="os", **kwargs )
-        self.da.plot.hist( bins = bins, yscale="log", ax = ax, zorder=1, label='all', **kwargs )
+
+        bins = np.arange( emin, emax, 1. if emax - emin < 5000 else (emax-emin)/5000 )
+        hist, *_ = xr.where(os != 0, os, np.nan).plot.hist( bins = bins, yscale="log", ax = ax, zorder=2, label="os", **kwargs )
+        xr.where( self.da != 0, self.da, np.nan).plot.hist( bins = bins, yscale="log", ax = ax, zorder=1, label='all', **kwargs )
+        
+        from scipy.signal import find_peaks
+        peaks, properties = find_peaks( 
+            hist, 
+            height = 10,
+            distance = int(300/dbins(bins)),
+        )
+        ax.plot( xbins(bins)[peaks], hist[peaks], "x", label="peaks" )
+        ax.plot( *self.gaussianfit( xbins(bins), hist, peaks ), label="fit" )
         ax.grid(True)
         ax.legend(loc="upper right")
         return ax
