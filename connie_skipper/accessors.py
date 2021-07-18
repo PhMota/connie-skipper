@@ -11,7 +11,7 @@ from matplotlib.axes._axes import Axes
 import traceback
 import warnings
 warnings.simplefilter("ignore", category=AccessorRegistrationWarning)
-
+import pandas as pd
 # ORIGINAL_ROBUST_PERCENTILE = xarray.plot.utils.ROBUST_PERCENTILE
 
 xbins = lambda b: (b[1:] + b[:-1])/2
@@ -90,6 +90,11 @@ class SkipperDataArrayAccessor:
     def c_os(self):
         return self.col_overscan
 
+    def centralize_os( self, dim = None, axis = None, skipna = True, mode = "median", **kwargs ):
+        da = self.da - self.overscan(dim).skipper.center( None, axis, skipna, mode, **kwargs )
+        da.attrs = self.da.attrs
+        return da
+
     def modulation(self, dim = None, mode = "median", **kwargs ):
         """generate a modulation image according to the given dimenstion and statistical reduction
         
@@ -113,11 +118,6 @@ class SkipperDataArrayAccessor:
             ret += term
         return ret/len(terms)
 
-    def centralize_os( self, dim = None, axis = None, skipna = True, mode = "median", **kwargs ):
-        da = self.da - self.overscan(dim).skipper.center( None, axis, skipna, mode, **kwargs )
-        da.attrs = self.da.attrs
-        return da
-
     def demodulate(self, dim = None, axis = None, skipna = None, mode = "median", **kwargs ):
         """new skipper with the modulation subtracted
         
@@ -127,7 +127,7 @@ class SkipperDataArrayAccessor:
             the dimension to be reduced for the modulation computation
         
         """
-        da = self.da - self.modulation( dim, axis, skipna, **kwargs )
+        da = self.da - self.modulation( dim, **kwargs )
         da.attrs = self.da.attrs
         return da
     
@@ -149,15 +149,19 @@ class SkipperDataArrayAccessor:
         from scipy.optimize import curve_fit
         
         multinorm = lambda x, mu, sigma, gain, *A: (
-            np.sum( [ a*norm.pdf(x, mu + i*gain, sigma)/norm.pdf(0, 0, sigma) for i, a in enumerate(A)], axis=0 )
+            np.sum( [ a*norm.pdf(x, mu + i*gain, sigma)/norm.pdf(0, 0, sigma) for i, a in enumerate(A)], axis=0 ) 
+            if len(A) > 1 else
+            A[0]*norm.pdf(x, mu, sigma)/norm.pdf(0, 0, sigma)
         )
         p0 = [
             kwargs.pop( "mu", None ) or energy[peaks].min(),
             kwargs.pop( "sigma", None ) or (np.nanmean( energy[peaks[1:]] - energy[peaks[:-1]] )/2 if peaks.size > 1 else 100),
-            kwargs.pop( "g", None) or ( np.nanmean( energy[peaks[1:]] + energy[peaks[:-1]] )/2 if peaks.size > 1 else 100 ),
+            np.nanmean( energy[peaks[1:]] - energy[peaks[:-1]] ) if peaks.size > 1 else 300,
         ]
         p0 = np.concatenate( [p0, distribution[peaks]], axis=-1 )
-        if log: log.value += f"p0 = {p0}<br>"
+        if log: 
+            with np.printoptions(precision=1, suppress=True, threshold=10):
+                log.value += f"<b>p0</b>={p0}<br>"
 
         bounds = (
             [-np.inf, np.inf],
@@ -165,7 +169,7 @@ class SkipperDataArrayAccessor:
             [10, np.inf],
             *( [ [1, np.inf] ]*peaks.size )
         )
-        if log: log.value += f"bounds = {bounds}<br>"
+#         if log: log.value += f"bounds = {bounds}<br>"
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore')
             try:
@@ -174,13 +178,17 @@ class SkipperDataArrayAccessor:
                     energy, 
                     distribution,
                     p0 = p0,
-                    bounds = tuple(zip(*bounds))
+                    bounds = tuple(zip(*bounds)),
+                    sigma = np.where(distribution > 0, np.sqrt(distribution), 1)
                 )
                 
             except ValueError as e:
-                if log: log.value += f"<b>{e}</b><br>"
+                if log: 
+                    log.value += f"<b>{e}</b><br>"
                 raise e
-        if log: log.value += f"popt = {popt}<br>"
+        if log: 
+            with np.printoptions(precision=1, suppress=True, threshold=10):
+                log.value += f"<b>popt</b>={popt}<br>"
         ret = multinorm(energy, *popt)
         assert ret.shape == energy.shape
         return (energy[ret>1], ret[ret>1]), popt
@@ -249,27 +257,33 @@ class SkipperDataArrayAccessor:
             fig, ax = plt.subplots(
                 figsize = kwargs.pop("figsize", (8,6))
             )
+        try:
+            flat = self.da.data.flatten()
+            emin = np.percentile( flat[~np.isnan(flat)], energy_percentile )
+            emax = np.percentile( flat[~np.isnan(flat)], 100 - energy_percentile )
+        except IndexError:
+            emin = flat[~np.isnan(flat)].min()
+            emax = flat[~np.isnan(flat)].max()
+            if log: 
+                log.value += f"<b style='color:red'>failed percentile</b><br>"
 
-        flat = self.da.data.flatten()
-        emin = np.percentile( flat[~np.isnan(flat)], energy_percentile )
-        emax = np.percentile( flat[~np.isnan(flat)], 100 - energy_percentile )
         if log: 
-            log.value += f"imgE = [{emin}, {emax}]<br>"
-        else:
-            print(f"imgE = [{emin}, {emax}]")
+            log.value += f"<b>E</b> = [{emin:.1f}, {emax:.1f}]<br>"
         obj = self.da.plot.imshow(
             x = x, 
             y = y, 
             ax = ax, 
             robust = True, 
             vmin = emin, 
-            vmax = emax, 
+            vmax = emax,
             **kwargs 
         )
+        ax.set_xlabel(r"{x} [pix]")
+        ax.set_ylabel(r"{y} [pix]")
         obj.axes.set_aspect( aspect )
         return obj
     
-    def plot_dist( self, bins = None, cond = None, ax = None, **kwargs):
+    def plot_distribution( self, bins = None, cond = None, ax = None, **kwargs):
         log = kwargs.pop("log", None)
         mu = kwargs.pop("mu", None)
         sigma = kwargs.pop("sigma", None)
@@ -288,15 +302,19 @@ class SkipperDataArrayAccessor:
             color = color,
             alpha = kwargs.pop("alpha", .5),
             zorder = zorder,
-            **kwargs
+#             **kwargs
         )
         from scipy.signal import find_peaks
         peaks, properties = find_peaks( 
             hist, 
             height = kwargs.pop("height", 10),
+            prominence = 10,
+#             width = 10,
             distance = int( kwargs.pop("distance", 300)/dbins(bins)),
         )
-        if log: log.value += f"peaks{(peaks.size)} = {peaks}<br>"
+        if log: 
+            log.value += f"<b>peaks</b>[{peaks.size}] = {peaks}<br>"
+            log.value += f"<b>peaks</b>[{peaks.size}] = {xbins(bins)[peaks]}<br>"
         ax.plot( 
             xbins(bins)[peaks], 
             hist[peaks], 
@@ -322,13 +340,17 @@ class SkipperDataArrayAccessor:
                 ),
                 zorder = zorder,
             )
-        except ValueError:
-            if log: log.value += traceback.format_exec()
+        except ValueError as e:
+            if log: 
+                log.value += f"<b>peaks</b>[{peaks.size}] = {peaks}<br>"
+                log.value += f"<b style='color:red'>failed to fit {e}</b><br>"
+            raise e
         return popt
         
     
     def plot_spectrum(self, bins=None, ax=None, **kwargs):
-        log = kwargs.pop("log", None)
+        progress_bar = kwargs.pop( "progress", None )
+        log = kwargs.pop( "log", None )
         if ax is None:
             fig, ax = plt.subplots(
                 figsize = kwargs.pop("figsize", (8,6))
@@ -336,53 +358,70 @@ class SkipperDataArrayAccessor:
         os = self.overscan("col")
         energy_percentile = kwargs.pop("energy_percentile", None)
         
-        if energy_percentile is None:
-            med = os.skipper.stats(["col", "row"], mode="median").data
-            mad = os.skipper.stats(["col", "row"], mode="mad").data
-            emin = med - energy_percentile*mad
-            emax = med + energy_percentile*mad
-            if log: log.value += f"E = [{emin},{emax}]<br>"
-        else:
-            flat = self.da.data.flatten()
-            emin = np.nanpercentile( flat[~np.isnan(flat)], energy_percentile )
-            emax = np.nanpercentile( flat[~np.isnan(flat)], 100 - energy_percentile )
-            if log: log.value += f"E = [{emin:.1f},{emax:.1f}]<br>"
+        flat = self.da.data.flatten()
+        emin = np.nanpercentile( flat[~np.isnan(flat)], energy_percentile )
+        emax = np.nanpercentile( flat[~np.isnan(flat)], 100 - energy_percentile )
+#         if log: 
+#             log.value += f"E = [{emin:.1f},{emax:.1f}]<br>"
         
         kwargs.pop("bins", None)
         bins = np.arange( emin, emax, 1. if emax - emin < 5000 else (emax-emin)/5000 )
-        if log: log.value += f"dbin = {dbins(bins)}<br>"
-        popt = os.skipper.plot_dist(
-            cond = os != 0,
-            bins = bins, 
-            ax = ax, 
-            zorder = 2, 
-            color = "b",
-            alpha = .5,
-            label = "os",
-            log = log,
-            **kwargs 
-        )
-        self.plot_dist(
-            cond = self.da != 0,
-            bins = bins,
-            ax = ax, 
-            zorder = 1, 
-            color = "orange",
-            alpha = .5,
-            label = 'all',
-            log = log,
-            mu = popt[0],
-            sigma = popt[1],
-            g = popt[2],
-            **kwargs 
-        )
+        popt = None
+        try:
+            popt = os.skipper.plot_distribution(
+                cond = os != 0,
+                bins = bins, 
+                ax = ax, 
+                zorder = 2, 
+                color = "b",
+                alpha = .5,
+                label = "os",
+                log = log,
+                **kwargs 
+            )
+        except ValueError as e:
+            if log: 
+                log.value += f"E = [{emin:.1f},{emax:.1f}]<br>"
+                log.value += f"<b>dbin</b> = {dbins(bins):.1f}<br>"
+                log.value += f"<b style='color:red'>failed to plot the overscan {e}</b><br>"
+#                 log.value += traceback.format_exc()
+            pass
+        
+        try:
+            self.plot_distribution(
+                cond = self.da != 0,
+                bins = bins,
+                ax = ax, 
+                zorder = 1, 
+                color = "orange",
+                alpha = .5,
+                label = 'all',
+                log = log,
+                mu = popt[0] if popt is not None else None,
+                sigma = popt[1] if popt is not None else None,
+                g = popt[2] if popt is not None else None,
+                **kwargs 
+            )
+        except ValueError as e:
+            if log: 
+                log.value += f"E = [{emin:.1f},{emax:.1f}]<br>"
+                log.value += f"<b>dbin</b> = {dbins(bins):.1f}<br>"
+                log.value += f"<b style='color:red'>failed to plot the overscan</b><br>"
+                log.value += traceback.format_exc()
+            pass
         
         ax.grid(True)
-        ax.set_yscale("log")
-        ax.set_ylabel(r"$dN/dE$ [counts/ADU]")
-        ax.set_xlabel(r"$E$ [ADU]")
+        ax.set_yscale( "log" )
+        ax.set_ylabel( r"$dN/dE$ [counts/ADU]" )
+        ax.set_xlabel( r"$E$ [ADU]" )
+        if "xaxis" in kwargs:
+            for prop, value in kwargs["xaxis"].items():
+                if isinstance(value, bool) and value:
+                    getattr( ax.xaxis, prop )()
+                else:
+                    getattr( ax.xaxis, prop )(value)
         ax.set_title("")
-        ax.legend(loc="upper left", frameon = False, bbox_to_anchor = (1, 1) )
+        ax.legend( loc = "upper left", frameon = False, bbox_to_anchor = (1, 1) )
         return ax
     
     def plot_full( 
@@ -446,6 +485,7 @@ class SkipperDataArrayAccessor:
         )
         axColor_left.yaxis.set_label_position("left")
         axColor_left.yaxis.tick_left()
+        axColor_left.set_ylabel(r"$E$ [ADU]")
         ### top panel
         axProj_top = None
         if kwargs.pop("yproj", False):
@@ -463,8 +503,8 @@ class SkipperDataArrayAccessor:
                 ax = axProj_top,
                 x = x, 
                 dim = y,
+                mode = mode,
             )
-            axProj_top.grid(True)
             axProj_top.set_ylabel(f"{mode}(col)")
 
         ### right panel
@@ -486,7 +526,6 @@ class SkipperDataArrayAccessor:
                 dim = x,
                 mode = mode,
             )
-            axProj_right.grid(True)
             axProj_right.set_title("")
             axProj_right.set_xlabel(f"{mode}(row)")
         
@@ -504,20 +543,9 @@ class SkipperDataArrayAccessor:
             self.plot_spectrum( 
                 ax = axSpectrum, 
                 energy_percentile = energy_percentile,
-                log = log
+                log = log,
+                progress = progress_bar,
             )
-#         print( "histogram done img" )
-#         ### aux panel for resizing
-#         axAux = divider.append_axes(
-#             "right",
-#             1.5,
-#             pad = 0.1,
-#             sharey = axProj_top,
-#             sharex = axProj_right,
-# #             add_to_figure = False
-#         )
-#         axAux.plot( [0], [0] )
-#         axAux.set_aspect(1)
         
         ### finalize
         fig.canvas.layout.width = '100%'
