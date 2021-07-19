@@ -181,7 +181,7 @@ class SkipperDataArrayAccessor:
                     bounds = tuple(zip(*bounds)),
                     sigma = np.where(distribution > 0, np.sqrt(distribution), 1)
                 )
-                
+                perr = np.sqrt(np.diag(pcov))
             except ValueError as e:
                 if log: 
                     log.value += f"<b>{e}</b><br>"
@@ -440,15 +440,17 @@ class SkipperDataArrayAccessor:
             progress_bar.value, progress_bar.description = progress_min, "creating fig"
             factor = lambda n: progress_min + n*(progress_max - progress_min)
         if fig is None:
-            fig, axImg = plt.subplots(
+            fig = plt.figure(
                 figsize = kwargs.pop("figsize", (8,6))
             )
+            fig.canvas.toolbar_position = 'bottom'
         else:
             fig.clf()
-            axImg = fig.add_subplot(111)
-        fig.canvas.toolbar_position = 'bottom'
         if "suptitle" in kwargs:
             fig.suptitle(kwargs["suptitle"])
+
+        axImg = fig.add_subplot(111)
+      
         ### panels
         divider = make_axes_locatable(axImg)
         

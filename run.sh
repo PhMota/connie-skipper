@@ -14,7 +14,7 @@ then
 fi
 PATH=~/.local/bin:\$PATH
 echo \$PATH
-if ! python3 -c 'import xarray'
+if ! python3 -c 'import xarray, scipy'
 then 
     echo -e '\e[33minstall requirements:\e[0m'
     pip3 install --upgrade pip --user
@@ -22,6 +22,7 @@ then
     pip3 install astropy --user
     pip3 install ipympl --user
     pip3 install voila --user
+    pip3 install scipy --user    
     pip3 install ipywidgets --user
     pip3 install xarray --user
 fi
