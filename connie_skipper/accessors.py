@@ -86,6 +86,17 @@ class SkipperDataArrayAccessor:
             {dim: slice(self.overscan_coord(dim), None)} 
         )
 
+    def active(self, dim, keep_size = False):
+        if keep_size:
+            return xr.where(
+                self.da[dim] > self.overscan_coord(dim),
+                np.nan,
+                self.da
+            )
+        return self.da.sel( 
+            {dim: slice(None, self.overscan_coord(dim))} 
+        )
+
     @property
     def c_os(self):
         return self.col_overscan
@@ -131,7 +142,7 @@ class SkipperDataArrayAccessor:
         da.attrs = self.da.attrs
         return da
     
-    def gaussianfit(self, energy, distribution, peaks, log = None, **kwargs):
+    def gaussianfit(self, energy, distribution, peaks, log = None, binsize = 1, **kwargs):
         """fits the distribution as a sum of gaussians
         
         Parameters
@@ -145,40 +156,76 @@ class SkipperDataArrayAccessor:
         log : object
             object to redirect the output
         """
-        from scipy.stats import norm
+        from scipy.stats import norm, poisson
         from scipy.optimize import curve_fit
+#         from scipy.signal import find_peaks
         
-        multinorm = lambda x, mu, sigma, gain, *A: (
-            np.sum( [ a*norm.pdf(x, mu + i*gain, sigma)/norm.pdf(0, 0, sigma) for i, a in enumerate(A)], axis=0 ) 
-            if len(A) > 1 else
-            A[0]*norm.pdf(x, mu, sigma)/norm.pdf(0, 0, sigma)
-        )
-        p0 = [
-            kwargs.pop( "mu", None ) or energy[peaks].min(),
-            kwargs.pop( "sigma", None ) or (np.nanmean( energy[peaks[1:]] - energy[peaks[:-1]] )/2 if peaks.size > 1 else 100),
-            np.nanmean( energy[peaks[1:]] - energy[peaks[:-1]] ) if peaks.size > 1 else 300,
-        ]
-        p0 = np.concatenate( [p0, distribution[peaks]], axis=-1 )
-        if log: 
-            with np.printoptions(precision=1, suppress=True, threshold=10):
-                log.value += f"<b>p0</b>={p0}<br>"
+# #         if cond is not None:
+# #             da = xr.where( cond, self.da, np.nan )
+# #         else:
+# #             da = self.da
 
-        bounds = (
-            [-np.inf, np.inf],
-            [10, np.inf],
-            [10, np.inf],
-            *( [ [1, np.inf] ]*peaks.size )
-        )
-#         if log: log.value += f"bounds = {bounds}<br>"
+#         hist, _ = np.histogram(
+#             self.da.data.flatten(), 
+#             bins = bins, 
+#             weights = np.ones_like(da.data.flatten())/dbins(bins), 
+#         )
+        
+#         peaks, properties = find_peaks( 
+#             hist, 
+#             height = kwargs.pop("height", 10),
+#             prominence = kwargs.pop("prominence", 10),
+#             distance = int( kwargs.pop("distance", 300)/dbins(bins)),
+#         )
+        bounds = {
+            "mu": [-np.inf, np.inf],
+            "sigma": [10, np.inf],
+            "A": [1, np.inf],
+            "gain": [10, np.inf],
+            "lambda": [0, np.inf]
+        }
+        
+        if len(peaks) == 1:
+            args = ["mu", "sigma", "A"]
+            fitfunc = lambda x, mu, sigma, A: (
+                A*norm.pdf(x, mu, sigma)
+            )
+            p0 = [
+                kwargs.pop( "mu", None ) or energy[peaks].min(),
+                kwargs.pop( "sigma", None ) or 100,
+                distribution[peaks[0]],
+            ]
+            if log: 
+                with np.printoptions(precision=1, suppress=True, threshold=10):
+                    log.value += f"<b>p0</b>={list(zip(args,p0))}<br>"
+            
+        elif len(peaks) >= 2:
+            args = ["mu", "sigma", "gain", "lambda", "A"]
+            fitfunc = lambda x, mu, sigma, gain, lamb_, A: (
+                A*np.sum( [ poisson.pmf(i, lamb_) * norm.pdf(x, mu + i*gain, sigma) for i, _ in enumerate(peaks)], axis=0 ) 
+            )
+            p0 = [
+                kwargs.pop( "mu", None ) or energy[peaks].min(),
+                kwargs.pop( "sigma", None ) or (np.nanmean( energy[peaks[1:]] - energy[peaks[:-1]] )/2),
+                np.nanmean( energy[peaks[1:]] - energy[peaks[:-1]] ) if peaks.size > 1 else 300,
+                1,
+                distribution[peaks[0]]
+            ]
+            bounds["gain"] = [p0[2]*.9, p0[2]*1.1]
+            if log: 
+                with np.printoptions(precision=3, suppress=True, threshold=10):
+                    log.value += f"<b>p0</b>={list(zip(args, p0))}<br>"
+
+
         with warnings.catch_warnings():
             warnings.filterwarnings('ignore')
             try:
                 popt, pcov = curve_fit( 
-                    multinorm, 
+                    fitfunc, 
                     energy, 
                     distribution,
                     p0 = p0,
-                    bounds = tuple(zip(*bounds)),
+                    bounds = tuple(zip(*[ bounds[arg] for arg in args ])),
                     sigma = np.where(distribution > 0, np.sqrt(distribution), 1)
                 )
                 perr = np.sqrt(np.diag(pcov))
@@ -186,12 +233,16 @@ class SkipperDataArrayAccessor:
                 if log: 
                     log.value += f"<b>{e}</b><br>"
                 raise e
-        if log: 
-            with np.printoptions(precision=1, suppress=True, threshold=10):
-                log.value += f"<b>popt</b>={popt}<br>"
-        ret = multinorm(energy, *popt)
+        
+        ret = fitfunc(energy, *popt)
         assert ret.shape == energy.shape
-        return (energy[ret>1], ret[ret>1]), popt
+        popt_dict = { arg: val for arg, val in zip(args, popt)}
+        perr_dict = { arg: val for arg, val in zip(args, perr)}
+        if log:
+            with np.printoptions(precision=3, suppress=True, threshold=10):
+                log.value += f"<b>popt</b>={list(popt)}<br>"
+                log.value += f"<b>perr</b>={list(perr)}<br>"
+        return energy[ret>1], ret[ret>1], popt_dict, perr_dict
         
     
     def stats( self, dim = None, axis = None, skipna = None, mode = "median", **kwargs  ):
@@ -238,6 +289,7 @@ class SkipperDataArrayAccessor:
         plt.legend()
         return ax
     
+    
     def plot_imshow( self, aspect = 1, ax=None, energy_percentile = 0, **kwargs ):
         """generates the heatmap of the data
         
@@ -267,8 +319,6 @@ class SkipperDataArrayAccessor:
             if log: 
                 log.value += f"<b style='color:red'>failed percentile</b><br>"
 
-        if log: 
-            log.value += f"<b>E</b> = [{emin:.1f}, {emax:.1f}]<br>"
         obj = self.da.plot.imshow(
             x = x, 
             y = y, 
@@ -295,7 +345,7 @@ class SkipperDataArrayAccessor:
         else:
             da = self.da
         color = kwargs.pop("color", None)
-        hist, *_ = plt.hist( 
+        hist, *_ = plt.hist(
             da.data.flatten(), 
             bins = bins, 
             weights = np.ones_like(da.data.flatten())/dbins(bins), 
@@ -309,12 +359,12 @@ class SkipperDataArrayAccessor:
             hist, 
             height = kwargs.pop("height", 10),
             prominence = 10,
-#             width = 10,
             distance = int( kwargs.pop("distance", 300)/dbins(bins)),
         )
         if log: 
-            log.value += f"<b>peaks</b>[{peaks.size}] = {peaks}<br>"
-            log.value += f"<b>peaks</b>[{peaks.size}] = {xbins(bins)[peaks]}<br>"
+            with np.printoptions(precision=1, suppress=True, threshold=10):
+#                 log.value += f"<b>peaks</b>[{peaks.size}] = {peaks}<br>"
+                log.value += f"<b>peaks</b>[{peaks.size}] = {xbins(bins)[peaks]}<br>"
         ax.plot( 
             xbins(bins)[peaks], 
             hist[peaks], 
@@ -324,28 +374,29 @@ class SkipperDataArrayAccessor:
             zorder = zorder,
         )
         try:
-            xy, popt = self.gaussianfit( xbins(bins), hist, peaks, log, mu=mu, sigma=sigma, g=g, **kwargs )
+            x, y, popt_dict, perr_dict = self.gaussianfit( xbins(bins), hist, peaks, log, mu=mu, sigma=sigma, g=g, **kwargs )
+        except ValueError as e:
+            if log: 
+                with np.printoptions(precision=1, suppress=True, threshold=10):
+                    log.value += f"<b>peaks</b>[{peaks.size}] = {peaks}<br>"
+                    log.value += f"<b style='color:red'>failed to fit {e}</b><br>"
+            raise e            
+        else:
             ax.plot( 
-                *xy, 
+                x, 
+                y, 
                 color = color,
                 linestyle = '-',
                 label = (
                     label
-                    +"\n"+
-                    fr"$\mu={popt[0]:.1f}$"
-                    +"\n"+
-                    fr"$\sigma={popt[1]:.1f}$"
-                    +"\n"+
-                    fr"$g={popt[2]:.1f}$" 
+                    +"\n" + fr"$\mu={popt_dict['mu']:.1f}$"
+                    +"\n" + fr"$\sigma={popt_dict['sigma']:.1f}$"
+                    + ("\n" + fr"$g={popt_dict['gain']:.1f}$" if "gain" in popt_dict else "")
+                    + ("\n" + fr"$\lambda={popt_dict['lambda']:.2f}$" if "lambda" in popt_dict else "")
                 ),
                 zorder = zorder,
             )
-        except ValueError as e:
-            if log: 
-                log.value += f"<b>peaks</b>[{peaks.size}] = {peaks}<br>"
-                log.value += f"<b style='color:red'>failed to fit {e}</b><br>"
-            raise e
-        return popt
+            return popt_dict, perr_dict
         
     
     def plot_spectrum(self, bins=None, ax=None, **kwargs):
@@ -356,19 +407,20 @@ class SkipperDataArrayAccessor:
                 figsize = kwargs.pop("figsize", (8,6))
             )
         os = self.overscan("col")
+        ac = self.active("col")
         energy_percentile = kwargs.pop("energy_percentile", None)
         
         flat = self.da.data.flatten()
         emin = np.nanpercentile( flat[~np.isnan(flat)], energy_percentile )
         emax = np.nanpercentile( flat[~np.isnan(flat)], 100 - energy_percentile )
-#         if log: 
-#             log.value += f"E = [{emin:.1f},{emax:.1f}]<br>"
         
         kwargs.pop("bins", None)
         bins = np.arange( emin, emax, 1. if emax - emin < 5000 else (emax-emin)/5000 )
         popt = None
+        if log: 
+            log.value += f"<b>overscan</b><br>"
         try:
-            popt = os.skipper.plot_distribution(
+            popt_os, perr_os = os.skipper.plot_distribution(
                 cond = os != 0,
                 bins = bins, 
                 ax = ax, 
@@ -387,19 +439,21 @@ class SkipperDataArrayAccessor:
 #                 log.value += traceback.format_exc()
             pass
         
+        if log: 
+            log.value += f"<b>active</b><br>"            
         try:
-            self.plot_distribution(
-                cond = self.da != 0,
+            popt_ac, perr_ac = ac.skipper.plot_distribution(
+                cond = ac != 0,
                 bins = bins,
                 ax = ax, 
                 zorder = 1, 
                 color = "orange",
                 alpha = .5,
-                label = 'all',
+                label = 'ac',
                 log = log,
-                mu = popt[0] if popt is not None else None,
-                sigma = popt[1] if popt is not None else None,
-                g = popt[2] if popt is not None else None,
+                mu = popt_os[0] if popt is not None else None,
+                sigma = popt_os[1] if popt is not None else None,
+                g = None,
                 **kwargs 
             )
         except ValueError as e:
