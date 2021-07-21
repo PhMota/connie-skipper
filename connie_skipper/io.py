@@ -26,7 +26,7 @@ def hdu_to_DataArray( hdu, new_dim = None ):
         data = [data] if new_dim else data,
         dims = dims,
         coords = coords,
-        attrs = { key: (hdu.header[key], hdu.header.comments[key]) for key in hdu.header.keys() if key != new_dim }
+        attrs = { key.lower(): (hdu.header[key], hdu.header.comments[key]) for key in hdu.header.keys() if key != new_dim }
     )
     da["row"] = range(da["row"].size)
     da["col"] = range(da["col"].size)
@@ -51,7 +51,7 @@ def fits_to_DataArray( fpath ):
         for hdu in f:
             if hdu.data is not None:
                 data.append( hdu_to_DataArray( hdu, new_dim = "chid" ) )
-#             else:
-#                 print( hdu.header )
     data = xr.concat( data, dim="chid" )
+    data.attrs["path"] = (fpath, "full path")
+    data.attrs["name"] = "dataarray"
     return data

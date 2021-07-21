@@ -17,14 +17,360 @@ import pandas as pd
 xbins = lambda b: (b[1:] + b[:-1])/2
 dbins = lambda b: b[1]-b[0]
 
+class Plottable:
+    def __init__(self):
+        pass
+    
+    def plot_projection(
+        self, 
+        dim = None, 
+        axis = None, 
+        skipna = None, 
+        hue = None,
+        mode = "median",
+        ax = None,
+        **kwargs
+    ):
+        self.overscan("col").skipper.stats( dim, axis, skipna, mode ).plot( hue = hue, ax=ax, zorder=2, label='os', **kwargs )
+        self.da.skipper.stats( dim, axis, skipna, mode ).plot( hue = hue, ax=ax, zorder=1, label='all', **kwargs )
+        if ax:
+            ax.grid(True)
+        plt.legend()
+        return ax
+    
+    
+    def plot_imshow( self, aspect = 1, ax=None, energy_percentile = 0, **kwargs ):
+        """generates the heatmap of the data
+        
+        Parameters
+        ----------
+        x : string
+            the dimension to be used in the x-axis
+        y : string
+            the dimension to be used in the y-axis
+        log : object
+            an object with `value` porperty where the output and error will be redirected to
+        """
+        log = kwargs.pop("log", None)
+        x = kwargs.pop("x", "row")
+        y = kwargs.pop("y", "col")
+        if ax is None:
+            fig, ax = plt.subplots(
+                figsize = kwargs.pop("figsize", (8,6))
+            )
+        try:
+            flat = self.da.data.flatten()
+            emin = np.percentile( flat[~np.isnan(flat)], energy_percentile )
+            emax = np.percentile( flat[~np.isnan(flat)], 100 - energy_percentile )
+        except IndexError:
+            emin = flat[~np.isnan(flat)].min()
+            emax = flat[~np.isnan(flat)].max()
+            if log: 
+                log.value += f"<b style='color:red'>failed percentile</b><br>"
+
+        obj = self.da.plot.imshow(
+            x = x, 
+            y = y, 
+            ax = ax, 
+            robust = True, 
+            vmin = emin, 
+            vmax = emax,
+            **kwargs 
+        )
+        ax.set_xlabel(r"{x} [pix]")
+        ax.set_ylabel(r"{y} [pix]")
+        obj.axes.set_aspect( aspect )
+        return obj
+    
+    def plot_distribution( self, bins = None, cond = None, ax = None, **kwargs):
+        log = kwargs.pop("log", None)
+        mu = kwargs.pop("mu", None)
+        sigma = kwargs.pop("sigma", None)
+        g = kwargs.pop("g", None)
+        label = kwargs.pop("label", None)
+        zorder = kwargs.pop("zorder", None)
+        if cond is not None:
+            da = xr.where( cond, self.da, np.nan )
+        else:
+            da = self.da
+        color = kwargs.pop("color", None)
+        hist, *_ = plt.hist(
+            da.data.flatten(), 
+            bins = bins, 
+            weights = np.ones_like(da.data.flatten())/dbins(bins), 
+            color = color,
+            alpha = kwargs.pop("alpha", .5),
+            zorder = zorder,
+#             **kwargs
+        )
+        from scipy.signal import find_peaks
+        peaks, properties = find_peaks( 
+            hist, 
+            height = kwargs.pop("height", 10),
+            prominence = 10,
+            distance = int( kwargs.pop("distance", 300)/dbins(bins)),
+        )
+        if log: 
+            with np.printoptions(precision=1, suppress=True, threshold=10):
+#                 log.value += f"<b>peaks</b>[{peaks.size}] = {peaks}<br>"
+                log.value += f"<b>peaks</b>[{peaks.size}] = {xbins(bins)[peaks]}<br>"
+        ax.plot( 
+            xbins(bins)[peaks], 
+            hist[peaks], 
+            color = color,
+            marker = 'o',
+            linestyle = "",
+            zorder = zorder,
+        )
+        try:
+            x, y, popt_dict, perr_dict = self.gaussianfit( xbins(bins), hist, peaks, log, mu=mu, sigma=sigma, g=g, **kwargs )
+        except ValueError as e:
+            if log: 
+                with np.printoptions(precision=1, suppress=True, threshold=10):
+                    log.value += f"<b>peaks</b>[{peaks.size}] = {peaks}<br>"
+                    log.value += f"<b style='color:red'>failed to fit {e}</b><br>"
+            raise e            
+        else:
+            ax.plot( 
+                x, 
+                y, 
+                color = color,
+                linestyle = '-',
+                label = (
+                    label
+                    +"\n" + fr"$\mu={popt_dict['mu']:.1f}$"
+                    +"\n" + fr"$\sigma={popt_dict['sigma']:.1f}$"
+                    + ("\n" + fr"$g={popt_dict['gain']:.1f}$" if "gain" in popt_dict else "")
+                    + ("\n" + fr"$\lambda={popt_dict['lambda']:.2f}$" if "lambda" in popt_dict else "")
+                ),
+                zorder = zorder,
+            )
+            return popt_dict, perr_dict
+        
+        
+    def plot_spectrum(self, bins=None, ax=None, **kwargs):
+        progress_bar = kwargs.pop( "progress", None )
+        log = kwargs.pop( "log", None )
+        if ax is None:
+            fig, ax = plt.subplots(
+                figsize = kwargs.pop("figsize", (8,6))
+            )
+        os = self.overscan("col")
+        ac = self.active("col")
+        energy_percentile = kwargs.pop("energy_percentile", None)
+        
+        flat = self.da.data.flatten()
+        emin = np.nanpercentile( flat[~np.isnan(flat)], energy_percentile )
+        emax = np.nanpercentile( flat[~np.isnan(flat)], 100 - energy_percentile )
+        
+        kwargs.pop("bins", None)
+        bins = np.arange( emin, emax, 1. if emax - emin < 5000 else (emax-emin)/5000 )
+        popt = None
+        if log: 
+            log.value += f"<b>overscan</b><br>"
+        try:
+            popt_os, perr_os = os.skipper.plot_distribution(
+                cond = os != 0,
+                bins = bins, 
+                ax = ax, 
+                zorder = 2, 
+                color = "b",
+                alpha = .5,
+                label = "os",
+                log = log,
+                **kwargs 
+            )
+        except ValueError as e:
+            if log: 
+                log.value += f"E = [{emin:.1f},{emax:.1f}]<br>"
+                log.value += f"<b>dbin</b> = {dbins(bins):.1f}<br>"
+                log.value += f"<b style='color:red'>failed to plot the overscan {e}</b><br>"
+#                 log.value += traceback.format_exc()
+            pass
+        
+        if log: 
+            log.value += f"<b>active</b><br>"            
+        try:
+            popt_ac, perr_ac = ac.skipper.plot_distribution(
+                cond = ac != 0,
+                bins = bins,
+                ax = ax, 
+                zorder = 1, 
+                color = "orange",
+                alpha = .5,
+                label = 'ac',
+                log = log,
+                mu = popt_os[0] if popt is not None else None,
+                sigma = popt_os[1] if popt is not None else None,
+                g = None,
+                **kwargs 
+            )
+        except ValueError as e:
+            if log: 
+                log.value += f"E = [{emin:.1f},{emax:.1f}]<br>"
+                log.value += f"<b>dbin</b> = {dbins(bins):.1f}<br>"
+                log.value += f"<b style='color:red'>failed to plot the overscan</b><br>"
+                log.value += traceback.format_exc()
+            pass
+        
+        ax.grid(True)
+        ax.set_yscale( "log" )
+        ax.set_ylabel( r"$dN/dE$ [counts/ADU]" )
+        ax.set_xlabel( r"$E$ [ADU]" )
+        if "xaxis" in kwargs:
+            for prop, value in kwargs["xaxis"].items():
+                if isinstance(value, bool) and value:
+                    getattr( ax.xaxis, prop )()
+                else:
+                    getattr( ax.xaxis, prop )(value)
+        ax.set_title("")
+        ax.legend( loc = "upper left", frameon = False, bbox_to_anchor = (1, 1) )
+        return ax
+    
+    
+    def plot_full( 
+        self, 
+        x="col", 
+        y="row",
+        mode="mean", 
+        fig = None,
+        **kwargs 
+    ):
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        log = kwargs.pop("log", None)
+        progress = kwargs.pop("progress_bar", None)
+        if progress:
+            progress_bar, progress_min, progress_max = progress
+            progress_bar.value, progress_bar.description = progress_min, "creating fig"
+            factor = lambda n: progress_min + n*(progress_max - progress_min)
+        if fig is None:
+            fig = plt.figure(
+                figsize = kwargs.pop("figsize", (8,6))
+            )
+            fig.canvas.toolbar_position = 'bottom'
+        else:
+            fig.clf()
+        if "suptitle" in kwargs:
+            fig.suptitle(kwargs["suptitle"])
+
+        axImg = fig.add_subplot(111)
+      
+        ### panels
+        divider = make_axes_locatable(axImg)
+        
+        ### image panel
+        if progress:
+            progress_bar.value, progress_bar.description = factor(.2), "imshow"
+        
+        energy_percentile = kwargs.pop("energy_percentile", None)
+        im = self.plot_imshow( 
+            x = x, 
+            y = y, 
+            ax = axImg, 
+            energy_percentile = energy_percentile,
+            log = log
+        )
+        axImg.set_title("")
+        
+        ### colorbar
+        if progress:
+            progress_bar.value, progress_bar.description = factor(.4), "colobar"
+        
+        axColor_left = divider.append_axes(
+            "left", 
+            .1, 
+            pad = 0.6, 
+        )
+        extend = im.colorbar.extend
+        boundaries = im.colorbar._boundaries
+        im.colorbar.remove()
+        cbar = fig.colorbar(
+            im, 
+            cax = axColor_left, 
+            extend = extend 
+        )
+        axColor_left.yaxis.set_label_position("left")
+        axColor_left.yaxis.tick_left()
+        axColor_left.set_ylabel(r"$E$ [ADU]")
+        ### top panel
+        axProj_top = None
+        if kwargs.pop("yproj", False):
+            if progress:
+                progress_bar.value, progress_bar.description = factor(.5), "yproj"            
+            axProj_top = divider.append_axes(
+                "top", 
+                1.5, 
+                pad = 0.1, 
+                sharex = axImg,
+            )
+            axProj_top.xaxis.set_label_position('top')
+            axProj_top.xaxis.tick_top()
+            self.plot_projection( 
+                ax = axProj_top,
+                x = x, 
+                dim = y,
+                mode = mode,
+            )
+            axProj_top.set_ylabel(f"{mode}(col)")
+
+        ### right panel
+        axProj_right = None
+        if kwargs.pop("xproj", False):
+            if progress:
+                progress_bar.value, progress_bar.description = factor(.6), "xproj"
+            axProj_right = divider.append_axes(
+                "right", 
+                1.5, 
+                pad = 0.1, 
+                sharey = axImg,
+            )
+            axProj_right.yaxis.set_label_position('right')
+            axProj_right.yaxis.tick_right()
+            self.plot_projection( 
+                ax = axProj_right,
+                y = y, 
+                dim = x,
+                mode = mode,
+            )
+            axProj_right.set_title("")
+            axProj_right.set_xlabel(f"{mode}(row)")
+        
+        ### right panel
+        if kwargs.pop("spectrum", False) and axProj_top is None:
+            if progress:
+                progress_bar.value, progress_bar.description = factor(.7), "spectrum"
+            axSpectrum = divider.append_axes(
+                "top",
+                1.5,
+                pad = 0.1,
+            )
+            axSpectrum.xaxis.set_label_position('top')
+            axSpectrum.xaxis.tick_top()
+            self.plot_spectrum( 
+                ax = axSpectrum, 
+                energy_percentile = energy_percentile,
+                log = log,
+                progress = progress_bar,
+            )
+        
+        ### finalize
+        fig.canvas.layout.width = '100%'
+        plt.tight_layout()
+        plt.draw()
+        if progress:
+            progress_bar.value, progress_bar.description = progress_max, "done plot"
+        return fig
+    
+
 @register_dataarray_accessor("skipper")
-class SkipperDataArrayAccessor:
+class SkipperDataArrayAccessor(Plottable):
     """
     Access methods for DataArrays for CONNIE skipper CCDs.
     
     Methods and attributes can be accessed through the `.skipper` attribute.
     """
     def __init__(self, da):
+        da.attrs["os_col"] = (349, 'first overscan column')
         self.da = da
         plt.rcParams.update({
             "image.origin": "lower",
@@ -33,6 +379,11 @@ class SkipperDataArrayAccessor:
             "grid.alpha": .5,
         })
         
+    def isel(self, **indexers_kwargs):
+        da = self.da.isel(**indexers_kwargs)
+        da.attrs['name'] = f"{self.da.attrs['name']}.isel({indexers_kwargs})"
+        return da
+        
     def mad( self, dim = None, axis = None, skipna = None, keep_attrs = True, **kwargs):
         """Reduce this DataArray’s data by applying median absolute deviation along some dimension(s).
 
@@ -40,6 +391,35 @@ class SkipperDataArrayAccessor:
         """
         med = abs( self.da - self.da.median(dim, axis, skipna, keep_attrs = True, **kwargs) )
         return med.median( dim, axis, skipna, keep_attrs = True, **kwargs )/0.6744897501960817
+
+    def stats( self, dim = None, axis = None, skipna = None, mode = "median", **kwargs  ):
+        """dispatcher for different statistics functions
+        
+        Parameters
+        ----------
+        mode : {median, mean, min, max, std, mad}
+            options for the statistical reduction to be used
+            
+        Returns
+        -------
+        reduced : DataArray
+        """
+        if mode == "median":
+            da = self.da.median( dim, axis, skipna=True, **kwargs )
+        elif mode == "mean":
+            da = self.da.mean( dim, axis, skipna=True, **kwargs )
+        elif mode == "min":
+            da = self.da.min( dim, axis, skipna=True, **kwargs )
+        elif mode == "max":
+            da = self.da.max( dim, axis, skipna=True, **kwargs )
+        elif mode == "std":
+            da = self.da.std( dim, axis, skipna=True, **kwargs )
+        elif mode == "mad":
+            da = self.da.skipper.mad( dim, axis, skipna=True, **kwargs )
+        else:
+            raise Exception(f"mode {mode} not implemented")
+        da.attrs['name'] = f"{self.da.attrs['name']}.{mode}({dim})"
+        return da
     
     def center( self, dim = None, axis = None, skipna = True, mode = "median", **kwargs ):
         """global image
@@ -52,6 +432,7 @@ class SkipperDataArrayAccessor:
     def centralize( self, dim = None, axis = None, skipna = True, mode = "median", **kwargs ):
         da = self.da - self.center( dim, axis, skipna, mode, **kwargs )
         da.attrs = self.da.attrs
+        da.attrs["name"] = f"{da.attrs['name']}.centralize({dim})"
         return da
     
     def trim( self, conds = None, na = np.nan ):
@@ -63,13 +444,15 @@ class SkipperDataArrayAccessor:
                 self.da["col"] <= 8, 
                 self.da["row"] <= 1,
                 abs(self.da["col"] - self.overscan_coord("col")) <= 1,
-                abs(self.da["row"] - self.overscan_coord("row")) <= 1,
+#                 abs(self.da["row"] - self.overscan_coord("row")) <= 1,
             ])
-        return xr.where( conds, na, self.da )
+        da = xr.where( conds, na, self.da )
+        da.attrs['name'] = f"{self.da.attrs['name']}.trim(col<8,row<1,abs(col-{self.overscan_coord('col')})<=1)"
+        return da
 
     def overscan_coord(self, dim):
         if dim == "col":
-            return 349
+            return self.da.attrs["os_col"][0]
         elif dim == "row":
             return 512
         else:
@@ -245,421 +628,4 @@ class SkipperDataArrayAccessor:
         return energy[ret>1], ret[ret>1], popt_dict, perr_dict
         
     
-    def stats( self, dim = None, axis = None, skipna = None, mode = "median", **kwargs  ):
-        """dispatcher for different statistics functions
-        
-        Parameters
-        ----------
-        mode : {median, mean, min, max, std, mad}
-            options for the statistical reduction to be used
-            
-        Returns
-        -------
-        reduced : DataArray
-        """
-        if mode == "median":
-            return self.da.median( dim, axis, skipna=True, **kwargs )
-        elif mode == "mean":
-            return self.da.mean( dim, axis, skipna=True, **kwargs )
-        elif mode == "min":
-            return self.da.min( dim, axis, skipna=True, **kwargs )
-        elif mode == "max":
-            return self.da.max( dim, axis, skipna=True, **kwargs )
-        elif mode == "std":
-            return self.da.std( dim, axis, skipna=True, **kwargs )
-        elif mode == "mad":
-            return self.da.skipper.mad( dim, axis, skipna=True, **kwargs )
-        else:
-            raise Exception(f"mode {mode} not implemented")
 
-    def plot_projection(
-        self, 
-        dim = None, 
-        axis = None, 
-        skipna = None, 
-        hue = None,
-        mode = "median",
-        ax = None,
-        **kwargs
-    ):
-        self.overscan("col").skipper.stats( dim, axis, skipna, mode ).plot( hue = hue, ax=ax, zorder=2, label='os', **kwargs )
-        self.da.skipper.stats( dim, axis, skipna, mode ).plot( hue = hue, ax=ax, zorder=1, label='all', **kwargs )
-        if ax:
-            ax.grid(True)
-        plt.legend()
-        return ax
-    
-    
-    def plot_imshow( self, aspect = 1, ax=None, energy_percentile = 0, **kwargs ):
-        """generates the heatmap of the data
-        
-        Parameters
-        ----------
-        x : string
-            the dimension to be used in the x-axis
-        y : string
-            the dimension to be used in the y-axis
-        log : object
-            an object with `value` porperty where the output and error will be redirected to
-        """
-        log = kwargs.pop("log", None)
-        x = kwargs.pop("x", "row")
-        y = kwargs.pop("y", "col")
-        if ax is None:
-            fig, ax = plt.subplots(
-                figsize = kwargs.pop("figsize", (8,6))
-            )
-        try:
-            flat = self.da.data.flatten()
-            emin = np.percentile( flat[~np.isnan(flat)], energy_percentile )
-            emax = np.percentile( flat[~np.isnan(flat)], 100 - energy_percentile )
-        except IndexError:
-            emin = flat[~np.isnan(flat)].min()
-            emax = flat[~np.isnan(flat)].max()
-            if log: 
-                log.value += f"<b style='color:red'>failed percentile</b><br>"
-
-        obj = self.da.plot.imshow(
-            x = x, 
-            y = y, 
-            ax = ax, 
-            robust = True, 
-            vmin = emin, 
-            vmax = emax,
-            **kwargs 
-        )
-        ax.set_xlabel(r"{x} [pix]")
-        ax.set_ylabel(r"{y} [pix]")
-        obj.axes.set_aspect( aspect )
-        return obj
-    
-    def plot_distribution( self, bins = None, cond = None, ax = None, **kwargs):
-        log = kwargs.pop("log", None)
-        mu = kwargs.pop("mu", None)
-        sigma = kwargs.pop("sigma", None)
-        g = kwargs.pop("g", None)
-        label = kwargs.pop("label", None)
-        zorder = kwargs.pop("zorder", None)
-        if cond is not None:
-            da = xr.where( cond, self.da, np.nan )
-        else:
-            da = self.da
-        color = kwargs.pop("color", None)
-        hist, *_ = plt.hist(
-            da.data.flatten(), 
-            bins = bins, 
-            weights = np.ones_like(da.data.flatten())/dbins(bins), 
-            color = color,
-            alpha = kwargs.pop("alpha", .5),
-            zorder = zorder,
-#             **kwargs
-        )
-        from scipy.signal import find_peaks
-        peaks, properties = find_peaks( 
-            hist, 
-            height = kwargs.pop("height", 10),
-            prominence = 10,
-            distance = int( kwargs.pop("distance", 300)/dbins(bins)),
-        )
-        if log: 
-            with np.printoptions(precision=1, suppress=True, threshold=10):
-#                 log.value += f"<b>peaks</b>[{peaks.size}] = {peaks}<br>"
-                log.value += f"<b>peaks</b>[{peaks.size}] = {xbins(bins)[peaks]}<br>"
-        ax.plot( 
-            xbins(bins)[peaks], 
-            hist[peaks], 
-            color = color,
-            marker = 'o',
-            linestyle = "",
-            zorder = zorder,
-        )
-        try:
-            x, y, popt_dict, perr_dict = self.gaussianfit( xbins(bins), hist, peaks, log, mu=mu, sigma=sigma, g=g, **kwargs )
-        except ValueError as e:
-            if log: 
-                with np.printoptions(precision=1, suppress=True, threshold=10):
-                    log.value += f"<b>peaks</b>[{peaks.size}] = {peaks}<br>"
-                    log.value += f"<b style='color:red'>failed to fit {e}</b><br>"
-            raise e            
-        else:
-            ax.plot( 
-                x, 
-                y, 
-                color = color,
-                linestyle = '-',
-                label = (
-                    label
-                    +"\n" + fr"$\mu={popt_dict['mu']:.1f}$"
-                    +"\n" + fr"$\sigma={popt_dict['sigma']:.1f}$"
-                    + ("\n" + fr"$g={popt_dict['gain']:.1f}$" if "gain" in popt_dict else "")
-                    + ("\n" + fr"$\lambda={popt_dict['lambda']:.2f}$" if "lambda" in popt_dict else "")
-                ),
-                zorder = zorder,
-            )
-            return popt_dict, perr_dict
-        
-    
-    def plot_spectrum(self, bins=None, ax=None, **kwargs):
-        progress_bar = kwargs.pop( "progress", None )
-        log = kwargs.pop( "log", None )
-        if ax is None:
-            fig, ax = plt.subplots(
-                figsize = kwargs.pop("figsize", (8,6))
-            )
-        os = self.overscan("col")
-        ac = self.active("col")
-        energy_percentile = kwargs.pop("energy_percentile", None)
-        
-        flat = self.da.data.flatten()
-        emin = np.nanpercentile( flat[~np.isnan(flat)], energy_percentile )
-        emax = np.nanpercentile( flat[~np.isnan(flat)], 100 - energy_percentile )
-        
-        kwargs.pop("bins", None)
-        bins = np.arange( emin, emax, 1. if emax - emin < 5000 else (emax-emin)/5000 )
-        popt = None
-        if log: 
-            log.value += f"<b>overscan</b><br>"
-        try:
-            popt_os, perr_os = os.skipper.plot_distribution(
-                cond = os != 0,
-                bins = bins, 
-                ax = ax, 
-                zorder = 2, 
-                color = "b",
-                alpha = .5,
-                label = "os",
-                log = log,
-                **kwargs 
-            )
-        except ValueError as e:
-            if log: 
-                log.value += f"E = [{emin:.1f},{emax:.1f}]<br>"
-                log.value += f"<b>dbin</b> = {dbins(bins):.1f}<br>"
-                log.value += f"<b style='color:red'>failed to plot the overscan {e}</b><br>"
-#                 log.value += traceback.format_exc()
-            pass
-        
-        if log: 
-            log.value += f"<b>active</b><br>"            
-        try:
-            popt_ac, perr_ac = ac.skipper.plot_distribution(
-                cond = ac != 0,
-                bins = bins,
-                ax = ax, 
-                zorder = 1, 
-                color = "orange",
-                alpha = .5,
-                label = 'ac',
-                log = log,
-                mu = popt_os[0] if popt is not None else None,
-                sigma = popt_os[1] if popt is not None else None,
-                g = None,
-                **kwargs 
-            )
-        except ValueError as e:
-            if log: 
-                log.value += f"E = [{emin:.1f},{emax:.1f}]<br>"
-                log.value += f"<b>dbin</b> = {dbins(bins):.1f}<br>"
-                log.value += f"<b style='color:red'>failed to plot the overscan</b><br>"
-                log.value += traceback.format_exc()
-            pass
-        
-        ax.grid(True)
-        ax.set_yscale( "log" )
-        ax.set_ylabel( r"$dN/dE$ [counts/ADU]" )
-        ax.set_xlabel( r"$E$ [ADU]" )
-        if "xaxis" in kwargs:
-            for prop, value in kwargs["xaxis"].items():
-                if isinstance(value, bool) and value:
-                    getattr( ax.xaxis, prop )()
-                else:
-                    getattr( ax.xaxis, prop )(value)
-        ax.set_title("")
-        ax.legend( loc = "upper left", frameon = False, bbox_to_anchor = (1, 1) )
-        return ax
-    
-    def plot_full( 
-        self, 
-        x="col", 
-        y="row",
-        mode="mean", 
-        fig = None,
-        **kwargs 
-    ):
-        from mpl_toolkits.axes_grid1 import make_axes_locatable
-        log = kwargs.pop("log", None)
-        progress = kwargs.pop("progress_bar", None)
-        if progress:
-            progress_bar, progress_min, progress_max = progress
-            progress_bar.value, progress_bar.description = progress_min, "creating fig"
-            factor = lambda n: progress_min + n*(progress_max - progress_min)
-        if fig is None:
-            fig = plt.figure(
-                figsize = kwargs.pop("figsize", (8,6))
-            )
-            fig.canvas.toolbar_position = 'bottom'
-        else:
-            fig.clf()
-        if "suptitle" in kwargs:
-            fig.suptitle(kwargs["suptitle"])
-
-        axImg = fig.add_subplot(111)
-      
-        ### panels
-        divider = make_axes_locatable(axImg)
-        
-        ### image panel
-        if progress:
-            progress_bar.value, progress_bar.description = factor(.2), "imshow"
-        
-        energy_percentile = kwargs.pop("energy_percentile", None)
-        im = self.plot_imshow( 
-            x = x, 
-            y = y, 
-            ax = axImg, 
-            energy_percentile = energy_percentile,
-            log = log
-        )
-        axImg.set_title("")
-        
-        ### colorbar
-        if progress:
-            progress_bar.value, progress_bar.description = factor(.4), "colobar"
-        
-        axColor_left = divider.append_axes(
-            "left", 
-            .1, 
-            pad = 0.6, 
-        )
-        extend = im.colorbar.extend
-        boundaries = im.colorbar._boundaries
-        im.colorbar.remove()
-        cbar = fig.colorbar(
-            im, 
-            cax = axColor_left, 
-            extend = extend 
-        )
-        axColor_left.yaxis.set_label_position("left")
-        axColor_left.yaxis.tick_left()
-        axColor_left.set_ylabel(r"$E$ [ADU]")
-        ### top panel
-        axProj_top = None
-        if kwargs.pop("yproj", False):
-            if progress:
-                progress_bar.value, progress_bar.description = factor(.5), "yproj"            
-            axProj_top = divider.append_axes(
-                "top", 
-                1.5, 
-                pad = 0.1, 
-                sharex = axImg,
-            )
-            axProj_top.xaxis.set_label_position('top')
-            axProj_top.xaxis.tick_top()
-            self.plot_projection( 
-                ax = axProj_top,
-                x = x, 
-                dim = y,
-                mode = mode,
-            )
-            axProj_top.set_ylabel(f"{mode}(col)")
-
-        ### right panel
-        axProj_right = None
-        if kwargs.pop("xproj", False):
-            if progress:
-                progress_bar.value, progress_bar.description = factor(.6), "xproj"
-            axProj_right = divider.append_axes(
-                "right", 
-                1.5, 
-                pad = 0.1, 
-                sharey = axImg,
-            )
-            axProj_right.yaxis.set_label_position('right')
-            axProj_right.yaxis.tick_right()
-            self.plot_projection( 
-                ax = axProj_right,
-                y = y, 
-                dim = x,
-                mode = mode,
-            )
-            axProj_right.set_title("")
-            axProj_right.set_xlabel(f"{mode}(row)")
-        
-        ### right panel
-        if kwargs.pop("spectrum", False) and axProj_top is None:
-            if progress:
-                progress_bar.value, progress_bar.description = factor(.7), "spectrum"
-            axSpectrum = divider.append_axes(
-                "top",
-                1.5,
-                pad = 0.1,
-            )
-            axSpectrum.xaxis.set_label_position('top')
-            axSpectrum.xaxis.tick_top()
-            self.plot_spectrum( 
-                ax = axSpectrum, 
-                energy_percentile = energy_percentile,
-                log = log,
-                progress = progress_bar,
-            )
-        
-        ### finalize
-        fig.canvas.layout.width = '100%'
-        plt.tight_layout()
-        plt.draw()
-        if progress:
-            progress_bar.value, progress_bar.description = progress_max, "done plot"
-        return fig
-
-# attempting to mimmick plt.Axes with all the direction information swapped
-# works for the first draw, but does not refresh
-class SwapedAxes(Axes):
-    def __init__(self, ax):
-        self._axis_names = ("y", "x")
-        self._ax = ax
-        self.xaxis, self.yaxis = ax.yaxis, ax.xaxis
-        self._autoscaleXon = self._autoscaleYon = True
-        self._animated = ax._animated
-        self.dataLim = type(ax.dataLim)( np.array(ax.dataLim.get_points())[:, ::-1].tolist() )
-        print(ax.dataLim, "->", self.dataLim)
-        self._viewLim = type(ax._viewLim)( np.array(ax._viewLim.get_points())[:, ::-1].tolist() )
-        print(ax._viewLim, "->", self._viewLim)
-        
-        self.spines = type(ax.spines)([ ("left", ax.spines["top"]), ("right", ax.spines["bottom"]), ("top", ax.spines["left"]), ("bottom", ax.spines["bottom"]) ])
-        print( ax.spines, "->", self.spines )
-        
-        print( ax._axes._position, "->", type(ax._axes._position)( np.array(ax._axes._position.get_points())[:, ::-1].tolist() ) )
-#         self._axes = type(ax._axes)( 
-#             type(ax._axes._position)(
-#                 ax.fig,
-#                 ax._axes._position.get_points()[:, ::-1].tolist()
-#             ) 
-#         )
-        self._axes = type(
-            "_axes",
-            (),
-            dict( 
-                _position = type(ax._axes._position)( np.array(ax._axes._position.get_points())[:, ::-1].tolist() ),
-                xaxis = ax._axes.yaxis,
-                yaxis = ax._axes.xaxis,
-                __repr__ = ax._axes.__repr__,
-                __str__ = ax._axes.__str__
-            )
-        )
-        print( ax._axes._position, "->", self._axes._position )
-        
-        print( ax._axes, "->", self._axes )
-        
-    
-    def get_xlim(self):
-        return self._ax.get_ylim()
-    
-    def get_ylim(self):
-        return self._ax.get_xlim()
-            
-    def __getattr__(self, attr):
-        print()
-        print( attr, ":" )
-        print( getattr(self._ax, attr) )
-        return getattr(self._ax, attr)
-    
