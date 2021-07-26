@@ -346,12 +346,20 @@ class Plottable:
             )
             axSpectrum.xaxis.set_label_position('top')
             axSpectrum.xaxis.tick_top()
-            self.plot_spectrum( 
-                ax = axSpectrum, 
-                energy_percentile = energy_percentile,
-                log = log,
-                progress = progress_bar,
-            )
+            if "events" in self.da.attrs:
+                axSpectrum.hist( 
+                    [ np.sum(events) for events in self.da.attrs["events"]], 
+                    bins=100
+                )
+                axSpectrum.set_yscale("log")
+                axSpectrum.set_ylabel(r"$N$ [counts]")
+            else:
+                self.plot_spectrum( 
+                    ax = axSpectrum, 
+                    energy_percentile = energy_percentile,
+                    log = log,
+                    progress = progress_bar,
+                )
         
         ### finalize
         fig.canvas.layout.width = '100%'
@@ -754,12 +762,13 @@ class SkipperDataArrayAccessor(Plottable):
         events = [ self.da.data[ labels == label ] for label in range(1, nclusters) ]
         
         da = xr.DataArray(
-            labels,
+            self.da.data.astype(float),
             dims = self.da.dims,
             coords = self.da.coords,
             attrs = self.da.attrs
         )
-        da[ da==0 ] = np.nan
+        da.data[ labels==0 ] = np.nan
+        da.attrs['events'] = events
         if log:
             log.value += f"{da}"
         return da
