@@ -141,7 +141,7 @@ class Plottable:
                     +"\n" + fr"$\mu={popt_dict['mu']:.1f}$"
                     +"\n" + fr"$\sigma={popt_dict['sigma']:.1f}$"
                     + ("\n" + fr"$g={popt_dict['gain']:.1f}$" if "gain" in popt_dict else "")
-                    + ("\n" + fr"$\lambda={popt_dict['lambda']:.2f}$" if "lambda" in popt_dict else "")
+                    + ("\n" + fr"$\lambda={popt_dict['lambda']:.4f}$" if "lambda" in popt_dict else "")
                 ),
                 zorder = zorder,
             )
