@@ -577,7 +577,6 @@ class SkipperDataArrayAccessor(Plottable):
             weights = np.ones_like(da.data.flatten())/dbins(bins), 
         )
         
-        
         peaks, properties = find_peaks( 
             hist, 
             height = kwargs.pop("height", 10),
@@ -751,12 +750,16 @@ class SkipperDataArrayAccessor(Plottable):
             log.value += f"<b>above</b><br>{above_threshold}<br>"
             log.value += f"<b>struct</b><br>{struct}<br>"
         labels, nclusters = ndimage.label(above_threshold, structure=struct)
+        
+        events = [ self.da.data[ labels == label ] for label in range(1, nclusters) ]
+        
         da = xr.DataArray(
             labels,
             dims = self.da.dims,
             coords = self.da.coords,
             attrs = self.da.attrs
         )
+        da[ da==0 ] = np.nan
         if log:
             log.value += f"{da}"
         return da
