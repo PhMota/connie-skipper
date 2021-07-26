@@ -89,6 +89,7 @@ class Plottable:
         g = kwargs.pop("g", None)
         label = kwargs.pop("label", None)
         zorder = kwargs.pop("zorder", None)
+
         if cond is not None:
             da = xr.where( cond, self.da, np.nan )
         else:
@@ -101,7 +102,6 @@ class Plottable:
             color = color,
             alpha = kwargs.pop("alpha", .5),
             zorder = zorder,
-#             **kwargs
         )
         from scipy.signal import find_peaks
         peaks, properties = find_peaks( 
@@ -123,7 +123,7 @@ class Plottable:
             zorder = zorder,
         )
         try:
-            x, y, popt_dict, perr_dict = self.gaussianfit( xbins(bins), hist, peaks, log, mu=mu, sigma=sigma, g=g, **kwargs )
+            x, y, popt_dict, perr_dict = self.gaussianfit( xbins(bins), hist, peaks, log, mu=mu, sigma=sigma, g=g, label=label, **kwargs )
         except ValueError as e:
             if log: 
                 with np.printoptions(precision=1, suppress=True, threshold=10):
@@ -198,7 +198,7 @@ class Plottable:
                 zorder = 1, 
                 color = "orange",
                 alpha = .5,
-                label = 'ac',
+                label = "ac",
                 log = log,
                 mu = popt_os[0] if popt is not None else None,
                 sigma = popt_os[1] if popt is not None else None,
@@ -525,7 +525,30 @@ class SkipperDataArrayAccessor(Plottable):
         da.attrs = self.da.attrs
         return da
     
-    def gaussianfit(self, energy, distribution, peaks, log = None, binsize = 1, **kwargs):
+    def histogram(self, binsize = 1, return_hist = False ):
+        flat = self.da.data.flatten()
+        emin = np.nanpercentile( flat[~np.isnan(flat)], energy_percentile )
+        emax = np.nanpercentile( flat[~np.isnan(flat)], 100 - energy_percentile )
+
+        bins = np.arange( emin, emax, binsize )
+        hist, _ = np.histogram(
+            flat, 
+            bins = bins, 
+            weights = np.ones_like(flat)/dbins(bins), 
+        )
+        self.da.attrs["hist"] = xr.DataArray(
+            hist,
+            dims = ["E"],
+            coords = {"E": xbins(bins)}
+        )
+        if return_hist:
+            return self.da.attrs["hist"]
+        return self
+
+#     def peaks()
+    
+    
+    def gaussianfit2(self, cond = None, label = None, log = None, binsize = 1, **kwargs):
         """fits the distribution as a sum of gaussians
         
         Parameters
@@ -541,25 +564,26 @@ class SkipperDataArrayAccessor(Plottable):
         """
         from scipy.stats import norm, poisson
         from scipy.optimize import curve_fit
-#         from scipy.signal import find_peaks
+        from scipy.signal import find_peaks
         
-# #         if cond is not None:
-# #             da = xr.where( cond, self.da, np.nan )
-# #         else:
-# #             da = self.da
+        if cond is not None:
+            da = xr.where( cond, self.da, np.nan )
+        else:
+            da = self.da
 
-#         hist, _ = np.histogram(
-#             self.da.data.flatten(), 
-#             bins = bins, 
-#             weights = np.ones_like(da.data.flatten())/dbins(bins), 
-#         )
+        hist, _ = np.histogram(
+            self.da.data.flatten(), 
+            bins = bins, 
+            weights = np.ones_like(da.data.flatten())/dbins(bins), 
+        )
         
-#         peaks, properties = find_peaks( 
-#             hist, 
-#             height = kwargs.pop("height", 10),
-#             prominence = kwargs.pop("prominence", 10),
-#             distance = int( kwargs.pop("distance", 300)/dbins(bins)),
-#         )
+        
+        peaks, properties = find_peaks( 
+            hist, 
+            height = kwargs.pop("height", 10),
+            prominence = kwargs.pop("prominence", 10),
+            distance = int( kwargs.pop("distance", 300)/dbins(bins)),
+        )
         bounds = {
             "mu": [-np.inf, np.inf],
             "sigma": [10, np.inf],
@@ -626,6 +650,116 @@ class SkipperDataArrayAccessor(Plottable):
                 log.value += f"<b>popt</b>={list(popt)}<br>"
                 log.value += f"<b>perr</b>={list(perr)}<br>"
         return energy[ret>1], ret[ret>1], popt_dict, perr_dict
-        
-    
 
+    def gaussianfit(self, energy, distribution, peaks, log = None, binsize = 1, label=None, **kwargs):
+        """fits the distribution as a sum of gaussians
+        
+        Parameters
+        ----------
+        energy : array
+            the energy-axis values (bin centers of the histogram)
+        distribution : array
+            the histogram-like values
+        peaks : array
+            indices for the initial guesses of the peak positions
+        log : object
+            object to redirect the output
+        """
+        from scipy.stats import norm, poisson
+        from scipy.optimize import curve_fit
+        bounds = {
+            "mu": [-np.inf, np.inf],
+            "sigma": [10, np.inf],
+            "A": [1, np.inf],
+            "gain": [10, np.inf],
+            "lambda": [0, np.inf]
+        }
+        
+        if len(peaks) == 1:
+            args = ["mu", "sigma", "A"]
+            fitfunc = lambda x, mu, sigma, A: (
+                A*norm.pdf(x, mu, sigma)
+            )
+            p0 = [
+                kwargs.pop( "mu", None ) or energy[peaks].min(),
+                kwargs.pop( "sigma", None ) or 100,
+                distribution[peaks[0]],
+            ]
+            if log: 
+                with np.printoptions(precision=1, suppress=True, threshold=10):
+                    log.value += f"<b>p0</b>={list(zip(args,p0))}<br>"
+            
+        elif len(peaks) >= 2:
+            args = ["mu", "sigma", "gain", "lambda", "A"]
+            fitfunc = lambda x, mu, sigma, gain, lamb_, A: (
+                A*np.sum( [ poisson.pmf(i, lamb_) * norm.pdf(x, mu + i*gain, sigma) for i, _ in enumerate(peaks)], axis=0 ) 
+            )
+            p0 = [
+                kwargs.pop( "mu", None ) or energy[peaks].min(),
+                kwargs.pop( "sigma", None ) or (np.nanmean( energy[peaks[1:]] - energy[peaks[:-1]] )/2),
+                np.nanmean( energy[peaks[1:]] - energy[peaks[:-1]] ) if peaks.size > 1 else 300,
+                1,
+                distribution[peaks[0]]
+            ]
+            bounds["gain"] = [p0[2]*.9, p0[2]*1.1]
+            if log: 
+                with np.printoptions(precision=3, suppress=True, threshold=10):
+                    log.value += f"<b>p0</b>={list(zip(args, p0))}<br>"
+
+
+        with warnings.catch_warnings():
+            warnings.filterwarnings('ignore')
+            try:
+                popt, pcov = curve_fit( 
+                    fitfunc, 
+                    energy, 
+                    distribution,
+                    p0 = p0,
+                    bounds = tuple(zip(*[ bounds[arg] for arg in args ])),
+                    sigma = np.where(distribution > 0, np.sqrt(distribution), 1)
+                )
+                perr = np.sqrt(np.diag(pcov))
+            except ValueError as e:
+                if log: 
+                    log.value += f"<b>{e}</b><br>"
+                raise e
+        
+        ret = fitfunc(energy, *popt)
+        assert ret.shape == energy.shape
+        popt_dict = { arg: val for arg, val in zip(args, popt)}
+        perr_dict = { arg: val for arg, val in zip(args, perr)}
+        if log:
+            with np.printoptions(precision=3, suppress=True, threshold=10):
+                log.value += f"<b>popt</b>={list(popt)},<br>"
+                log.value += f"<b>perr</b>={list(perr)},<br>"
+                if label:
+                    log.value += f"<b>'{label}':</b> {list(popt)},<br>"
+                    log.value += f"<b>'{label}err':</b> {list(perr)},<br>"
+                
+        return energy[ret>1], ret[ret>1], popt_dict, perr_dict
+            
+    def extract(self, threshold, nborder=0, struct="cross", log=None):
+        from scipy import ndimage
+        above_threshold = xr.where(self.da >= threshold, 1, 0)
+        if struct == "cross":
+            struct = ndimage.generate_binary_structure(2, 1)
+        elif struct == "square":
+            struct = ndimage.generate_binary_structure(2, 2)
+        if nborder > 0:
+            above_threshold = ndimage.binary_dilation(above_threshold, structure=struct, iterations=nborder)
+        if log:
+            log.value += f"<b>above</b><br>{above_threshold}<br>"
+            log.value += f"<b>struct</b><br>{struct}<br>"
+        labels, nclusters = ndimage.label(above_threshold, structure=struct)
+        da = xr.DataArray(
+            labels,
+            dims = self.da.dims,
+            coords = self.da.coords,
+            attrs = self.da.attrs
+        )
+        if log:
+            log.value += f"{da}"
+        return da
+
+        
+        
